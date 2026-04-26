@@ -1,27 +1,36 @@
 #!/bin/bash
 # ==============================================================
-#  Paywall News Summarizer — macOS 1회 셋업 체크 스크립트
+#  Chrome AppleScript Summarizer — macOS 자동 셋업 (v0.2)
 # ==============================================================
 #  실행: bash setup.sh
-#  - 의존성 확인 (Chrome, Python, claude CLI)
-#  - Chrome 설정 안내 (Allow JavaScript from Apple Events)
-#  - 첫 권한 팝업 안내
+#
+#  자동 처리:
+#    1. macOS / Chrome / Python3 확인
+#    2. Homebrew 미설치 시 설치 안내
+#    3. Node.js 미설치 시 자동 설치 (brew install node)
+#    4. OAuth CLI 중 하나 선택해서 자동 설치 (npm install)
+#    5. Chrome 옵션 안내 (수동 1회: "Allow JavaScript from Apple Events")
+#    6. 첫 실행 권한 팝업 안내
 # ==============================================================
 set -e
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== Paywall News Summarizer 셋업 체크 ===${NC}\n"
+echo -e "${BLUE}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  Chrome AppleScript Summarizer — 자동 셋업               ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════════╝${NC}\n"
 
-# ── 1. macOS 확인 ──
+# ── 1. OS 확인 (macOS 전용) ──
 if [[ "$(uname)" != "Darwin" ]]; then
-    echo -e "${RED}[X] macOS 전용입니다 (현재: $(uname))${NC}"
+    echo -e "${RED}[X] 이 도구는 macOS 전용입니다 (현재: $(uname))${NC}"
+    echo -e "${YELLOW}Windows/Linux는 지원하지 않습니다 — README의 'Windows 미지원' 섹션 참조.${NC}"
     exit 1
 fi
-echo -e "${GREEN}[✓] macOS$(sw_vers -productVersion 2>/dev/null)${NC}"
+echo -e "${GREEN}[✓] macOS $(sw_vers -productVersion 2>/dev/null)${NC}"
 
 # ── 2. Google Chrome ──
 if [ ! -d "/Applications/Google Chrome.app" ]; then
@@ -38,48 +47,100 @@ if ! command -v python3 &>/dev/null; then
 fi
 echo -e "${GREEN}[✓] $(python3 --version)${NC}"
 
-# ── 4. claude CLI ──
-if ! command -v claude &>/dev/null; then
-    echo -e "${RED}[X] claude CLI 미설치${NC}"
-    echo "    설치 가이드: https://docs.claude.com/en/docs/claude-code/setup"
-    exit 1
+# ── 4. Homebrew (선택, Node.js 자동 설치용) ──
+if ! command -v brew &>/dev/null; then
+    echo -e "${YELLOW}[!] Homebrew 미설치 — Node.js/CLI 자동 설치를 원하면 먼저 설치 권장${NC}"
+    echo "    설치 명령: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+    HAS_BREW=0
+else
+    echo -e "${GREEN}[✓] Homebrew $(brew --version | head -1)${NC}"
+    HAS_BREW=1
 fi
-CLAUDE_VER=$(claude --version 2>&1 | head -1)
-echo -e "${GREEN}[✓] $CLAUDE_VER${NC}"
 
-# ── 5. claude 로그인 상태 ──
-echo -e "\n${YELLOW}claude CLI 로그인 상태 확인 중...${NC}"
-LOGIN_TEST=$(echo "ok" | claude -p --output-format text "한 단어로만 답: 안녕" 2>&1 | head -3)
-if echo "$LOGIN_TEST" | grep -qi "not logged in\|please run /login\|authentication"; then
-    echo -e "${RED}[X] claude CLI 로그인 안 됨${NC}"
-    echo "    터미널에서 'claude' 한 번 실행해 로그인 후 재시도"
-    exit 1
+# ── 5. Node.js (CLI 설치용) ──
+if ! command -v node &>/dev/null; then
+    echo -e "${YELLOW}[!] Node.js 미설치 (OAuth CLI 설치에 필요)${NC}"
+    if [ "$HAS_BREW" = "1" ]; then
+        read -p "지금 자동 설치하시겠습니까? (brew install node) [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            brew install node
+            echo -e "${GREEN}[✓] Node.js $(node --version)${NC}"
+        else
+            echo -e "${YELLOW}    스킵 — 나중에 'brew install node' 실행 후 OAuth CLI 설치 가능${NC}"
+        fi
+    else
+        echo "    Homebrew 설치 후 'brew install node' 실행"
+    fi
+else
+    echo -e "${GREEN}[✓] Node.js $(node --version)${NC}"
 fi
-echo -e "${GREEN}[✓] claude CLI OAuth 정상${NC}"
 
-# ── 6. Chrome AppleScript JS 옵션 안내 ──
-echo -e "\n${YELLOW}=== 다음 1회 설정 필요 (수동) ===${NC}"
-echo "Chrome 메뉴 > 보기(View) > 개발자 정보(Developer)"
-echo " → ${YELLOW}\"Allow JavaScript from Apple Events\"${NC} 체크"
+# ── 6. OAuth CLI 자동 설치 (선택) ──
 echo
-read -p "위 설정 완료했나요? (y/n) " -n 1 -r
+echo -e "${BLUE}── OAuth CLI 설치 (인증 방식 선택) ──${NC}"
+echo "OAuth CLI 한 개만 설치/로그인하면 됩니다. 어느 거 사용하시겠습니까?"
+echo "  ${GREEN}1)${NC} Claude Code      — Anthropic 계정 OAuth"
+echo "  ${GREEN}2)${NC} Codex (ChatGPT)  — ChatGPT Plus/Pro 구독자 OAuth"
+echo "  ${GREEN}3)${NC} Gemini CLI       — Google 계정 OAuth (무료 티어 후함)"
+echo "  ${GREEN}4)${NC} 스킵 (API 키 사용 또는 나중에 GUI에서 설치)"
+echo
+read -p "선택 [1-4]: " -n 1 CLI_CHOICE
+echo
+
+if [ "$CLI_CHOICE" = "1" ]; then
+    if command -v node &>/dev/null; then
+        echo -e "${BLUE}Claude Code 설치 중...${NC}"
+        npm install -g @anthropic-ai/claude-code 2>&1 | tail -3
+        echo -e "${GREEN}[✓] 설치 완료. 터미널에 'claude' 실행해 OAuth 로그인 (1회)${NC}"
+    else
+        echo -e "${RED}    Node.js 필요 — 설치 후 'npm install -g @anthropic-ai/claude-code'${NC}"
+    fi
+elif [ "$CLI_CHOICE" = "2" ]; then
+    if command -v node &>/dev/null; then
+        echo -e "${BLUE}Codex CLI 설치 중...${NC}"
+        npm install -g @openai/codex 2>&1 | tail -3
+        echo -e "${GREEN}[✓] 설치 완료. 터미널에 'codex' 실행 → 'Sign in with ChatGPT'${NC}"
+    else
+        echo -e "${RED}    Node.js 필요${NC}"
+    fi
+elif [ "$CLI_CHOICE" = "3" ]; then
+    if command -v node &>/dev/null; then
+        echo -e "${BLUE}Gemini CLI 설치 중...${NC}"
+        npm install -g @google/gemini-cli 2>&1 | tail -3
+        echo -e "${GREEN}[✓] 설치 완료. 터미널에 'gemini' 실행 → 'Login with Google'${NC}"
+    else
+        echo -e "${RED}    Node.js 필요${NC}"
+    fi
+else
+    echo -e "${YELLOW}    스킵 — 나중에 GUI [⚙️ 설정 변경] 패널의 [📦 설치] 버튼 사용 가능${NC}"
+fi
+
+# ── 7. Chrome 옵션 안내 (수동 필수) ──
+echo
+echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║  ⚠️  Chrome 1회 설정 필요 (수동, 자동화 불가)            ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+echo "Chrome 메뉴 → ${YELLOW}보기(View)${NC} → ${YELLOW}개발자 정보(Developer)${NC}"
+echo "         → ${YELLOW}\"Allow JavaScript from Apple Events\"${NC} 체크"
+echo
+read -p "위 설정 완료했나요? [y/N] " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo -e "${RED}설정 후 다시 실행해주세요.${NC}"
-    exit 1
+    echo -e "${RED}    설정 후 다시 'bash setup.sh' 실행 권장${NC}"
 fi
 
-# ── 7. 작업 디렉토리 + counts 파일 위치 ──
-COUNTS_DIR="$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")"
-echo -e "\n${GREEN}[✓] 패키지 위치: $COUNTS_DIR${NC}"
-
-# ── 8. 첫 실행 안내 ──
-echo -e "\n${GREEN}=== 셋업 완료 ===${NC}"
+# ── 8. 완료 ──
+DIR="$(cd "$(dirname "$0")" && pwd)"
 echo
-echo "테스트 실행:"
-echo "  ${YELLOW}python3 $COUNTS_DIR/summarize.py https://www.cnbc.com/2026/04/26/example.html${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  ✓ 셋업 완료                                              ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo
-echo "첫 실행 시 macOS가 ${YELLOW}\"Terminal이 Google Chrome 제어 허용?\"${NC} 팝업을 띄움"
-echo "→ ${GREEN}허용${NC} 클릭 (이후엔 자동)"
+echo "다음 명령으로 GUI 실행 (브라우저 자동 열림):"
+echo "  ${GREEN}python3 $DIR/app_web.py${NC}"
 echo
-echo "텔레그램 봇 통합: telegram_bot_integration.py 참고"
+echo "첫 실행 시 macOS 권한 팝업 (\"Terminal이 Chrome 제어 허용?\") → ${GREEN}허용${NC} 클릭"
+echo "이후엔 모든 게 자동 — URL 붙여넣기만 하면 한국어 요약."
+echo
+echo "문서: README.md / 트러블슈팅 / 라이선스 모두 포함"
