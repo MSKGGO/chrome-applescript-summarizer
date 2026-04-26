@@ -66,21 +66,29 @@ python3 app.py
 # 또는 더블클릭: Summarizer.command
 ```
 
-**인증 방식 — 첫 실행 시 자동 선택:**
+**인증 방식 — OAuth 우선, 첫 실행 시 자동 감지:**
 
-1. **Claude Code OAuth (권장, 기본)** — `claude` CLI 설치하고 한 번 로그인하면 끝
-   - 설치: https://docs.claude.com/en/docs/claude-code/setup
-   - 로그인: 터미널에 `claude` 입력 → 브라우저로 OAuth 로그인 (1회)
-   - app.py가 자동 감지 → API 키 입력창 비활성화
-   - 비용은 본인 Claude Code 구독에 청구
+### 🔐 OAuth (CLI 한 번 로그인하면 끝, API 키 입력 불필요)
 
-2. **(폴백) API 키 직접 입력** — Claude Code 못 쓰는 환경용
-   - **Anthropic:** https://console.anthropic.com/settings/keys
-   - **OpenAI:** https://platform.openai.com/api-keys
-   - **Google Gemini:** https://aistudio.google.com/apikey (무료 티어 후함, 60 RPM)
-   - 비용은 본인 API 계정에 청구
+| Provider | 설치 명령 | 로그인 | 비용 |
+|---|---|---|---|
+| **Claude Code** | https://docs.claude.com/en/docs/claude-code/setup | 터미널에 `claude` → 브라우저 OAuth | 본인 Claude Code 구독에 청구 |
+| **OpenAI Codex (ChatGPT)** | `npm install -g @openai/codex` | 터미널에 `codex` → ChatGPT 계정 OAuth | 본인 ChatGPT Plus/Pro 구독에 포함 |
+| **Google Gemini CLI** | `npm install -g @google/gemini-cli` | 터미널에 `gemini` → Google 계정 OAuth | 무료 티어 후함 (Gemini 2.5 Pro 1M tokens/day) |
 
-> **OAuth가 가능한 건 Claude Code뿐**입니다. OpenAI/Google AI Studio는 third-party 앱 OAuth 미지원이라 API 키 방식만. Gemini는 무료 티어가 후해서 키 받기만 하면 사실상 무료로 쓸 수 있어요.
+**첫 실행 시** app.py가 위 3개 CLI를 우선순위대로 자동 감지 → 로그인된 게 있으면 즉시 사용.
+
+### 🔑 API 키 (폴백, OAuth CLI 못 쓰는 환경용)
+
+| Provider | 키 발급 |
+|---|---|
+| Anthropic | https://console.anthropic.com/settings/keys |
+| OpenAI | https://platform.openai.com/api-keys |
+| Google Gemini | https://aistudio.google.com/apikey (무료) |
+
+비용은 본인 API 계정에 청구.
+
+설정은 `~/.config/chrome-applescript-summarizer/config.json` (chmod 600)에 본인 기기에만 저장. 외부 전송 X.
 
 설정은 `~/.config/chrome-applescript-summarizer/config.json` (chmod 600)에 본인 기기에만 저장. 외부 전송 X.
 
