@@ -536,16 +536,30 @@ class App(tk.Tk):
         self.geometry("780x680")
         self.cfg = load_config()
         self._build_ui()
+        self.update_idletasks()  # GUI 즉시 그리기
         if not self.cfg:
-            # 첫 실행: OAuth 자동 감지 시도
+            # 첫 실행: OAuth 자동 감지를 background thread에서 (GUI 응답성 유지)
+            self.status_label.config(text="🔍 OAuth CLI 감지 중... (최대 1~2분)", foreground="blue")
+            threading.Thread(target=self._auto_detect_async, daemon=True).start()
+
+    def _auto_detect_async(self):
+        try:
             auto = auto_detect_oauth_provider()
+        except Exception as e:
+            auto = ""
+        def _apply():
             if auto:
                 model = PROVIDERS[auto]["default_model"]
                 self.cfg = {"provider": auto, "model": model, "api_key": ""}
                 save_config(self.cfg)
                 self._refresh_provider_label()
+                prov_label = PROVIDERS[auto]["label"]
+                self.status_label.config(text=f"✓ 자동 인증: {prov_label}", foreground="green")
             else:
-                self.after(200, self.open_settings)
+                self.status_label.config(text="OAuth CLI 미감지 — 설정창에서 인증 방식 선택",
+                                         foreground="orange")
+                self.open_settings()
+        self.after(0, _apply)
 
     def _build_ui(self):
         menubar = tk.Menu(self)

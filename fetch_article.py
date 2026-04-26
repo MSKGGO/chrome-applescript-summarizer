@@ -76,9 +76,38 @@ tell application "Google Chrome"
 end tell
 '''
 
+# Cloudflare/봇체크 감지 키워드 (소문자 비교)
+CHALLENGE_HINTS = [
+    "just a moment", "checking your browser", "verify you are human",
+    "are you a robot", "ddos protection by", "cloudflare",
+    "challenge-platform", "needs to review the security",
+    "performance & security by", "press & hold",
+    "please confirm you are not a bot",
+]
+
+
+def is_challenge_page(body: str, title: str) -> bool:
+    """본문이 짧고 챌린지 키워드 포함 시 True."""
+    if len(body) > 3000:
+        return False
+    blob = (title + " " + body[:1500]).lower()
+    return any(h in blob for h in CHALLENGE_HINTS)
+
+
+# 챌린지 감지 시: 새 탭을 활성화 + Chrome을 앞으로 (사용자가 즉시 보고 통과)
+ACTIVATE_LAST_TAB = '''
+tell application "Google Chrome"
+    activate
+    try
+        set active tab index of window 1 to (count of tabs of window 1)
+    end try
+end tell
+'''
+
 deadline = time.time() + 60
 result = None
 last_proc = None
+challenge_alerted = False
 time.sleep(1)  # 첫 polling은 1초 후
 while time.time() < deadline:
     last_proc = subprocess.run(
@@ -99,8 +128,23 @@ while time.time() < deadline:
         time.sleep(1.5)
         continue
     body = result.get("b", "") or ""
-    if len(body) > 1500 and "Subscribe to continue" not in body[:500]:
+    title = result.get("t", "") or ""
+
+    # 본문이 충분하고 챌린지/페이월 아니면 성공
+    if len(body) > 1500 and "Subscribe to continue" not in body[:500] \
+            and not is_challenge_page(body, title):
         break
+
+    # 챌린지 감지: 한 번만 탭 활성화 + 시간 연장 (5분까지)
+    if not challenge_alerted and is_challenge_page(body, title):
+        challenge_alerted = True
+        try:
+            subprocess.run(["osascript", "-e", ACTIVATE_LAST_TAB], capture_output=True, timeout=5)
+        except Exception:
+            pass
+        deadline = time.time() + 300
+        print(f"[CHALLENGE DETECTED] 탭 활성화. 5분까지 대기. title={title!r}", file=sys.stderr)
+
     time.sleep(1.5)
 
 # 결과 처리 + 탭 정리
@@ -116,8 +160,13 @@ if result and len(result.get("b", "")) > 1000:
     ))
     sys.exit(0)
 
+err_type = "timeout_or_paywalled"
+if challenge_alerted:
+    err_type = "challenge_not_passed"
+
 print(json.dumps({
-    "error": "timeout_or_paywalled",
+    "error": err_type,
+    "hint": "Cloudflare/봇 챌린지가 통과되지 않았습니다. 그 Chrome 탭에서 직접 클릭/체크 후 다시 시도하세요." if challenge_alerted else None,
     "title": result.get("t") if result else None,
     "url": result.get("u") if result else None,
     "body_len": len(result.get("b", "")) if result else 0,
