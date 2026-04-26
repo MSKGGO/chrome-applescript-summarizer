@@ -12,7 +12,10 @@ venv/
 
 # 사용자별 설정/카운터 (절대 커밋 X)
 .daily_counts.json
+daily_usage.json
 config.json
+prompt.md
+prompt.md.bak-*
 
 # IDE
 .vscode/

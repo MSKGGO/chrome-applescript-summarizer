@@ -41,27 +41,37 @@ HERE = Path(__file__).parent
 FETCH_SCRIPT = HERE / "fetch_article.py"
 CONFIG_DIR = Path.home() / ".config" / "chrome-applescript-summarizer"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+USAGE_FILE = CONFIG_DIR / "daily_usage.json"
+# 사용자 편집 가능한 프롬프트 (GUI / 텔레그램 봇 공유). 없으면 DEFAULT_PROMPT 사용.
+PROMPT_FILE = CONFIG_DIR / "prompt.md"
+
+# ── 안전장치 기본값 (사용자가 설정에서 조정 가능, 차단이 아니라 "경고만") ──
+SAFETY_DEFAULTS = {
+    "soft_limit_per_domain_per_day": 50,   # 도메인별 하루 권장 한도
+    "soft_limit_per_batch": 20,            # 한 번에 큐에 추가하는 URL 수 권장 한도
+    "min_interval_same_domain_sec": 8,     # 같은 도메인 연속 호출 간 최소 권장 간격
+}
 
 SUBPROC_ENV = os.environ.copy()
 SUBPROC_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + SUBPROC_ENV.get("PATH", "")
 
-PROMPT_TEMPLATE = """다음 영문(또는 외국어) 뉴스 기사 본문을 한국어로 요약해주세요.
+DEFAULT_PROMPT_TEMPLATE = """다음 영문(또는 외국어) 뉴스 기사 본문을 한국어로 요약해주세요.
 출력은 반드시 아래 형식만, 별도 인사/서두/주석 없이 시작합니다.
 
-**기사제목 (한국어 의역)**
+기사제목 (한국어 의역)
 
-* **핵심 포인트1 제목:** 1~3문장 분석. 시장/경제/지정학적 함의를 해석. 수치는 굵게.
-* **핵심 포인트2 제목:** 1~3문장 분석.
-* **핵심 포인트3 제목:** 1~3문장 분석.
+* 핵심 포인트1 제목: 1~3문장 분석. 시장/경제/지정학적 함의를 해석.
+* 핵심 포인트2 제목: 1~3문장 분석.
+* 핵심 포인트3 제목: 1~3문장 분석.
 * (사안이 크면 4~5번째 포인트까지 추가)
 
 (언론사명, YYYY-MM-DD)
-[원문]({url})
+{url}
 
 규칙:
 - 단순 사실 나열이 아니라 시장/경제/지정학적 함의를 해석
 - 핵심 포인트 보통 3개, 사안 크면 4~5개
-- 수치(%, $, 배수)는 본문에서도 굵게 (**...**)
+- 굵게(**...**) 표시는 사용하지 않음 — 모든 텍스트 일반 서식
 - 한국어 우선, 고유명사는 원어 병기 가능
 - 발행일은 본문/URL에서 추출, 미상이면 (언론사명)만
 
@@ -72,6 +82,40 @@ PROMPT_TEMPLATE = """다음 영문(또는 외국어) 뉴스 기사 본문을 한
 {body}
 ---
 """
+
+# 하위 호환 alias
+PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
+
+
+def load_prompt_template() -> str:
+    """사용자가 편집한 prompt.md가 있으면 그걸, 없으면 DEFAULT.
+    필수 placeholder: {url}, {title}, {body}.
+    GUI와 텔레그램 봇(summarize.py)이 같은 파일 공유."""
+    if PROMPT_FILE.exists():
+        try:
+            text = PROMPT_FILE.read_text(encoding="utf-8")
+            # 필수 placeholder 검사 (없으면 사용자가 망친 거 → fallback)
+            if "{url}" in text and "{title}" in text and "{body}" in text:
+                return text
+        except Exception:
+            pass
+    return DEFAULT_PROMPT_TEMPLATE
+
+
+def save_prompt_template(text: str) -> str:
+    """프롬프트 템플릿을 사용자별 위치에 저장. 필수 placeholder 검증."""
+    missing = [p for p in ("{url}", "{title}", "{body}") if p not in text]
+    if missing:
+        raise ValueError(f"필수 placeholder 누락: {', '.join(missing)}")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    PROMPT_FILE.write_text(text, encoding="utf-8")
+    return str(PROMPT_FILE)
+
+
+def reset_prompt_template() -> str:
+    """사용자 prompt.md를 DEFAULT 내용으로 다시 쓰기."""
+    return save_prompt_template(DEFAULT_PROMPT_TEMPLATE)
+
 
 # OAuth 옵션을 위로, API 키 폴백을 아래로
 PROVIDERS = {
@@ -339,7 +383,7 @@ def summarize_url(url: str, cfg: dict) -> str:
     if len(body) > 10000:
         body = body[:10000] + "\n[...중략...]"
 
-    prompt = PROMPT_TEMPLATE.format(url=final_url, title=title, body=body)
+    prompt = load_prompt_template().format(url=final_url, title=title, body=body)
     provider = cfg.get("provider", "claude_cli")
     model = cfg.get("model", PROVIDERS.get(provider, {}).get("default_model", ""))
 
@@ -362,7 +406,10 @@ DEFAULT_SAVE_DIR = "~/Documents/Summaries"
 
 
 def save_summary_to_file(url: str, title: str, result: str, cfg: dict, save_dir: str = None) -> str:
-    """요약 결과를 마크다운 파일로 저장. 반환: 저장된 절대 경로."""
+    """요약 결과를 마크다운 파일로 저장.
+    기본: 날짜별 누적 로그 (예: 2026-04-26.md) — 하루 분량 한 파일에 append.
+    cfg["save_mode"] == "per_article" 이면 기존처럼 1건당 1파일.
+    반환: 저장된 절대 경로."""
     base = Path(save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).expanduser()
     base.mkdir(parents=True, exist_ok=True)
 
@@ -370,25 +417,160 @@ def save_summary_to_file(url: str, title: str, result: str, cfg: dict, save_dir:
         domain = _urlparse(url).netloc.replace("www.", "")
     except Exception:
         domain = "unknown"
-    safe_domain = re.sub(r"[^a-zA-Z0-9._-]", "_", domain)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{ts}_{safe_domain}.md"
-    filepath = base / filename
 
     provider = cfg.get("provider", "?")
     model = cfg.get("model", "?")
     prov_label = PROVIDERS.get(provider, {}).get("label", provider)
 
-    body = (
-        f"# {title or url}\n\n"
+    save_mode = cfg.get("save_mode", "daily_log")  # daily_log | per_article
+    now = datetime.now()
+
+    if save_mode == "per_article":
+        safe_domain = re.sub(r"[^a-zA-Z0-9._-]", "_", domain)
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        filename = f"{ts}_{safe_domain}.md"
+        filepath = base / filename
+        body = (
+            f"# {title or url}\n\n"
+            f"> **Source:** [{url}]({url})  \n"
+            f"> **Saved:** {now.strftime('%Y-%m-%d %H:%M:%S')}  \n"
+            f"> **Provider:** {prov_label} / `{model or 'default'}`\n\n"
+            f"---\n\n"
+            f"{result}\n"
+        )
+        filepath.write_text(body, encoding="utf-8")
+        return str(filepath)
+
+    # ── 기본 모드: 날짜별 누적 로그 ──
+    date_str = now.strftime("%Y-%m-%d")
+    filepath = base / f"{date_str}.md"
+
+    is_new = not filepath.exists()
+    header_block = ""
+    if is_new:
+        header_block = (
+            f"# 📰 {date_str} 뉴스 요약 로그\n\n"
+            f"> 자동 누적 로그 — 이 파일에 오늘 요약된 모든 기사가 시간순으로 쌓입니다.\n\n"
+            f"---\n\n"
+        )
+
+    entry = (
+        f"## {now.strftime('%H:%M:%S')} · {domain}\n\n"
         f"> **Source:** [{url}]({url})  \n"
-        f"> **Saved:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+        f"> **Title:** {title or '(제목 추출 실패)'}  \n"
         f"> **Provider:** {prov_label} / `{model or 'default'}`\n\n"
+        f"{result}\n\n"
         f"---\n\n"
-        f"{result}\n"
     )
-    filepath.write_text(body, encoding="utf-8")
+
+    with filepath.open("a", encoding="utf-8") as f:
+        if header_block:
+            f.write(header_block)
+        f.write(entry)
     return str(filepath)
+
+
+# ════════════════════════════════════════════════════════════
+#  안전장치: 일일 사용량 추적 (도메인별)
+# ════════════════════════════════════════════════════════════
+
+def _today_key() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _domain_of(url: str) -> str:
+    try:
+        d = _urlparse(url).netloc.lower()
+        return d[4:] if d.startswith("www.") else d
+    except Exception:
+        return "unknown"
+
+
+def load_usage() -> dict:
+    """파일 구조: {"YYYY-MM-DD": {"domain": [ts1, ts2, ...]}}. 7일치만 유지."""
+    if not USAGE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(USAGE_FILE.read_text())
+    except Exception:
+        return {}
+    # GC: 7일 넘은 날짜 제거
+    cutoff = datetime.now().timestamp() - 7 * 86400
+    cleaned = {}
+    for date_str, domains in data.items():
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").timestamp()
+            if d >= cutoff:
+                cleaned[date_str] = domains
+        except Exception:
+            continue
+    return cleaned
+
+
+def save_usage(data: dict):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    USAGE_FILE.write_text(json.dumps(data, indent=2))
+    try:
+        os.chmod(USAGE_FILE, 0o600)
+    except Exception:
+        pass
+
+
+def record_usage(url: str):
+    """URL 호출 직전(또는 직후)에 호출. 타임스탬프 누적."""
+    data = load_usage()
+    today = _today_key()
+    domain = _domain_of(url)
+    data.setdefault(today, {}).setdefault(domain, []).append(int(datetime.now().timestamp()))
+    save_usage(data)
+
+
+def get_today_stats() -> dict:
+    """반환: {"domain": count, ...} 오늘 기준."""
+    data = load_usage()
+    today = data.get(_today_key(), {})
+    return {d: len(ts) for d, ts in today.items()}
+
+
+def get_domain_recent_ts(url: str) -> int:
+    """해당 도메인의 가장 최근 호출 타임스탬프 (없으면 0)."""
+    data = load_usage()
+    today = data.get(_today_key(), {})
+    domain = _domain_of(url)
+    ts_list = today.get(domain, [])
+    return max(ts_list) if ts_list else 0
+
+
+def check_safety_warnings(urls: list, cfg: dict = None) -> list:
+    """큐 추가 직전 호출. 차단하지 않고 경고 문자열 리스트만 반환.
+    UI에서 사용자에게 보여주고 "그래도 진행" 선택지를 줌."""
+    cfg = cfg or {}
+    safety = cfg.get("safety", {})
+    per_domain = safety.get("soft_limit_per_domain_per_day", SAFETY_DEFAULTS["soft_limit_per_domain_per_day"])
+    per_batch = safety.get("soft_limit_per_batch", SAFETY_DEFAULTS["soft_limit_per_batch"])
+
+    warnings = []
+    if len(urls) > per_batch:
+        warnings.append(
+            f"⚠️ 한 번에 {len(urls)}개 URL을 큐에 추가하려고 합니다 (권장 {per_batch}개 이하). "
+            f"대량 일괄 크롤링은 사이트 ToS 위반 소지가 있고 IP 차단을 부를 수 있어요."
+        )
+
+    today_stats = get_today_stats()
+    incoming_per_domain = {}
+    for u in urls:
+        d = _domain_of(u)
+        incoming_per_domain[d] = incoming_per_domain.get(d, 0) + 1
+
+    for domain, incoming in incoming_per_domain.items():
+        already = today_stats.get(domain, 0)
+        total_after = already + incoming
+        if total_after > per_domain:
+            warnings.append(
+                f"⚠️ {domain}: 오늘 이미 {already}건, 추가하면 {total_after}건 (권장 한도 {per_domain}/일 초과). "
+                f"평소 본인이 읽을 만한 페이스를 유지하세요."
+            )
+    return warnings
 
 
 def auto_detect_oauth_provider() -> str:

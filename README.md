@@ -1,10 +1,20 @@
 # Chrome AppleScript Summarizer v0.1
 
+> 📜 **MIT 라이선스 — 누구나 자유롭게 사용/수정/배포/포크 가능.** 본인의 Claude/OpenAI/Gemini 계정과 본인의 macOS Chrome 세션을 쓰는 클라이언트 측 도구입니다. 코드 수정·개선 PR 환영.
+>
 > ⚠️ **macOS 전용 도구입니다.** Windows / Linux 미지원 — AppleScript는 macOS Apple Events API라 OS-level 등가물이 다른 OS에 없습니다. Windows에서는 작동하지 않으며, 별도 포팅 계획도 현재 없습니다.
 
 URL을 던지면 **평소 쓰던 macOS Chrome**으로 본문을 가져와 **한국어 요약 포맷**으로 돌려주는 자동화 패키지.
 
 **지원 사이트:** Bloomberg / WSJ / FT / Reuters / CNBC / 한국 언론 / 블로그 / 보도자료 등 거의 모든 웹 기사. 평소 Chrome에 로그인된 paywall 사이트도 그대로 통과.
+
+**v0.1 주요 기능:**
+- 🖥️ 웹 GUI (큐 처리, 다크모드, 모바일 반응형)
+- 🔐 OAuth 6가지 / API 키 폴백 자동 감지
+- 📝 **프롬프트 실시간 편집기** (자동 저장 + 외부 편집 감지) — GUI ↔ 텔레그램 봇 같은 파일 공유
+- 💾 **자동 저장 (날짜별 누적 로그)** — `~/Documents/Summaries/2026-04-26.md` 한 파일에 그날 요약 모두 시간순 append
+- 🛡️ **안전장치** — 도메인별 일일 사용량 / 배치 크기 / 도메인 throttling (차단이 아니라 경고만)
+- 🤖 텔레그램 봇 통합용 코드 포함
 
 ---
 
@@ -72,11 +82,15 @@ python3 app_web.py
 - **textarea에 URL 여러 개** 한 번에 → ⌘+⏎ 또는 [큐에 추가]
 - **순차 처리** (Chrome/LLM 충돌 회피)
 - 작업 카드로 **실시간 진행 표시** (대기 → 처리 중 → 완료/실패)
+- 화면 상단 **💾 자동 저장 토글** — 켜면 모든 완료 요약이 `YYYY-MM-DD.md` 한 파일에 누적 append
+- **[📝 프롬프트]** 버튼 — 요약 형식을 textarea로 실시간 편집, 1.5초 후 자동 저장. vim 등 외부 편집도 5초 이내 자동 감지
+- **[🛡️ 안전 가이드]** 버튼 — 윤리적 사용 가이드 + 오늘 도메인별 사용량 진행 바 + 한도 조정
 - **[⚙️ 설정 변경]** 패널에서:
   - CLI 라이브 상태 (✅⚠️❌)
   - **[📦 설치]** 버튼 — 미설치 CLI를 1클릭 설치
   - **[🔑 로그인 안내]** 버튼 — OAuth 로그인 정확한 명령 팝업
   - Provider 6가지 중 선택 + 모델 선택 + (필요시) API 키 입력
+  - 저장 모드 (날짜별 누적 / 기사 1건당 1파일)
 
 ### ⌨️ B. CLI 단독
 ```bash
@@ -185,17 +199,26 @@ GUI 단독 사용 시는 카운터 없음 (사용자 책임).
 ```
 chrome-applescript-summarizer/
 ├── README.md                       # 이 파일
-├── LICENSE                         # MIT
-├── .gitignore                      # config.json 등 제외
-├── app_web.py                      # 🖥️ 웹 GUI (큐, 설정 패널, CLI 자동 설치)
-├── app.py                          # GUI 백엔드 (LLM 호출, OAuth 감지)
+├── LICENSE                         # MIT — 자유 사용/수정/배포 OK
+├── .gitignore                      # config.json / prompt.md / daily_usage.json 등 사용자별 파일 제외
+├── app_web.py                      # 🖥️ 웹 GUI (큐, 안전장치, 프롬프트 편집기, 자동 저장)
+├── app.py                          # GUI 백엔드 (LLM 호출, OAuth 감지, 누적 로그 저장)
 ├── Summarizer.command              # 더블클릭 실행
 ├── fetch_article.py                # AppleScript 본문 추출 + Cloudflare 감지
-├── summarize.py                    # CLI: 본문 + claude -p 요약
-├── prompt_template.md              # 한국어 요약 프롬프트 (커스터마이즈 가능)
+├── summarize.py                    # CLI: 본문 + claude -p 요약 (텔레그램 봇이 호출)
+├── prompt_template.md              # 한국어 요약 프롬프트 가이드 문서 (참고용)
 ├── setup.sh                        # macOS 자동 셋업 (인터랙티브)
 ├── test_url.sh                     # 단일 URL 테스트
 └── telegram_bot_integration.py     # python-telegram-bot 통합용 코드
+```
+
+**사용자별 파일 (git에 안 올라감, 자동 생성):**
+```
+~/.config/chrome-applescript-summarizer/
+├── config.json                     # provider/model/api_key/save_mode/safety 설정
+├── prompt.md                       # 사용자가 편집한 요약 프롬프트 (GUI ↔ 텔레그램 봇 공유)
+├── prompt.md.bak-*                 # reset 시 자동 백업
+└── daily_usage.json                # 도메인별 일일 사용량 추적 (7일치)
 ```
 
 ---
@@ -221,8 +244,33 @@ Windows 사용자께는:
 
 ---
 
-## 라이선스 / 면책
+## 라이선스 / 자유 사용 / 면책
 
-- MIT License (LICENSE 파일 참조)
-- 사용 결과 발생하는 ToS 위반/계정 정지 등 모든 책임은 사용자 본인
-- LLM API 사용량/비용은 사용자 본인 계정에 청구
+### 📜 MIT License — 누구나 자유롭게 사용·수정·배포 가능
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software...
+```
+
+- ✅ **개인/상업적 사용** 모두 자유
+- ✅ **포크 / 수정 / 재배포** 자유 (저작권 표시만 유지)
+- ✅ **본인 프로젝트에 통합** 자유
+- ✅ **Pull Request 환영** — 개선/버그 수정/포팅 PR은 언제나 환영합니다
+- ✅ **이슈 자유롭게 등록** — 질문/제안/버그 보고 환영
+
+### ⚠️ 면책
+
+- 사용 결과 발생하는 ToS 위반 / IP 차단 / 계정 정지 등 **모든 책임은 사용자 본인**
+- LLM API 사용량/비용은 사용자 본인 계정에 청구 (도구는 코드 한 줄도 외부 서버에 전송 안 함)
+- 본 도구는 **anti-bot bypass / fingerprint spoofing / "사람 흉내" 코드를 의도적으로 제외**합니다 — 사용자 평소 Chrome 세션을 그대로 쓰는 클라이언트 측 도구일 뿐입니다
+- Cloudflare 등 봇 챌린지는 **사용자가 직접 통과**하는 방식 (자동 우회 X)
+
+### 🤝 기여 가이드
+
+- PR / 이슈 / 포크 모두 환영
+- 새 기능 추가 시 README의 해당 섹션에도 반영해주세요
+- 자동화 윤리 가이드(상단 "윤리적 사용 가이드")의 정신은 유지해주세요 — anti-bot 우회 코드는 PR 받지 않습니다

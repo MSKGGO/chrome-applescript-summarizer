@@ -35,6 +35,10 @@ from app import (
     auto_detect_oauth_provider, PROVIDERS,
     check_claude_cli, check_codex_cli, check_gemini_cli,
     save_summary_to_file, DEFAULT_SAVE_DIR,
+    record_usage, get_today_stats, get_domain_recent_ts,
+    check_safety_warnings, SAFETY_DEFAULTS, _domain_of,
+    load_prompt_template, save_prompt_template, reset_prompt_template,
+    DEFAULT_PROMPT_TEMPLATE, PROMPT_FILE,
 )
 
 PORT = 8765
@@ -96,6 +100,21 @@ def _worker_loop():
             job["started_at"] = time.time()
         try:
             cfg = load_config()
+            # 안전장치: 같은 도메인 연속 호출 시 최소 간격 보장 (사람 페이스 흉내)
+            min_interval = cfg.get("safety", {}).get(
+                "min_interval_same_domain_sec",
+                SAFETY_DEFAULTS["min_interval_same_domain_sec"],
+            )
+            if min_interval > 0:
+                last_ts = get_domain_recent_ts(job["url"])
+                wait_for = (last_ts + min_interval) - time.time()
+                if 0 < wait_for <= 30:  # 30초 이상은 무시 (다른 시간대로 간주)
+                    time.sleep(wait_for)
+            # 사용량 기록 (실행 직전 — 실패해도 시도는 카운트)
+            try:
+                record_usage(job["url"])
+            except Exception:
+                pass
             result = summarize_url(job["url"], cfg)
             with _jobs_lock:
                 job["result"] = result
@@ -369,6 +388,160 @@ HTML = r"""<!DOCTYPE html>
     .empty {
       text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px;
     }
+
+    /* ── 안전 가이드 패널 ── */
+    .safety-banner {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; margin-bottom: 12px;
+      background: var(--warn-bg); color: var(--warn-text);
+      border-left: 4px solid var(--warn-border); border-radius: 6px;
+      font-size: 13px;
+    }
+    .safety-banner .grow { flex: 1; }
+    .safety-banner button {
+      font-size: 11px; padding: 4px 10px; border-radius: 4px;
+      background: rgba(0,0,0,0.08); color: var(--warn-text); border: 0;
+      font-weight: 600;
+    }
+    .safety-panel {
+      display: none; background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px; margin-bottom: 15px;
+      box-shadow: var(--shadow);
+    }
+    .safety-panel.open { display: block; }
+    .safety-panel h3 { margin: 0 0 10px; font-size: 14px; color: var(--text); }
+    .safety-panel ul { margin: 6px 0 12px 18px; padding: 0; font-size: 13px; color: var(--text-muted); }
+    .safety-panel li { margin: 4px 0; }
+    .safety-panel li b { color: var(--text); }
+    .safety-panel .ok { color: var(--done-fg); }
+    .safety-panel .no { color: var(--failed-fg); }
+    .usage-table {
+      width: 100%; font-size: 12px; margin: 8px 0;
+      border-collapse: collapse;
+    }
+    .usage-table th, .usage-table td {
+      text-align: left; padding: 6px 10px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .usage-table th { color: var(--text-muted); font-weight: 600; }
+    .usage-table .bar {
+      display: inline-block; height: 8px; border-radius: 3px;
+      background: var(--done-fg); vertical-align: middle; margin-right: 6px;
+    }
+    .usage-table .bar.warn { background: #ffc107; }
+    .usage-table .bar.danger { background: var(--failed-fg); }
+
+    /* ── 상단 Quick Bar (자동 저장 토글) ── */
+    .quick-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; margin-bottom: 12px;
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow);
+      font-size: 13px; flex-wrap: wrap;
+    }
+    .quick-bar .switch {
+      position: relative; display: inline-block; width: 42px; height: 22px;
+    }
+    .quick-bar .switch input { opacity: 0; width: 0; height: 0; }
+    .quick-bar .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background-color: var(--secondary-bg); transition: .2s;
+      border-radius: 22px;
+    }
+    .quick-bar .slider:before {
+      position: absolute; content: ""; height: 16px; width: 16px;
+      left: 3px; bottom: 3px; background-color: white;
+      transition: .2s; border-radius: 50%;
+    }
+    .quick-bar input:checked + .slider { background-color: var(--done-fg); }
+    .quick-bar input:checked + .slider:before { transform: translateX(20px); }
+    .quick-bar .toggle-label { font-weight: 600; color: var(--text); cursor: pointer; user-select: none; }
+    .quick-bar .toggle-hint { color: var(--text-muted); font-size: 11px; }
+    .quick-bar .toggle-hint code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+    .quick-bar .qb-actions { margin-left: auto; display: flex; gap: 6px; }
+    .quick-bar button.mini {
+      font-size: 11px; padding: 5px 10px;
+      background: var(--secondary-bg); color: var(--secondary-text);
+      border: 0; border-radius: 4px; cursor: pointer; font-weight: 500;
+    }
+    .quick-bar button.mini:hover { background: var(--secondary-bg-hover); }
+
+    /* ── 프롬프트 편집기 (상단 독립 패널) ── */
+    .prompt-panel {
+      display: none; background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px; margin-bottom: 15px;
+      box-shadow: var(--shadow);
+    }
+    .prompt-panel.open { display: block; }
+    .prompt-panel-head {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+    }
+    .prompt-panel-head h3 { margin: 0; font-size: 14px; color: var(--text); flex: 1; }
+    .save-status {
+      font-size: 11px; padding: 3px 10px; border-radius: 10px;
+      font-weight: 600; min-width: 60px; text-align: center;
+      transition: all 0.18s;
+    }
+    .save-status.saved { background: var(--done-fg); color: white; }
+    .save-status.dirty { background: #ffc107; color: #5a4500; }
+    .save-status.saving { background: var(--running-fg); color: white; }
+    .save-status.error { background: var(--failed-fg); color: white; }
+    .save-status.idle { background: var(--code-bg); color: var(--text-muted); }
+
+    .prompt-editor textarea {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px; min-height: 320px; line-height: 1.55;
+      width: 100%; padding: 12px;
+      border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text);
+      border-radius: 6px; resize: vertical;
+    }
+    .prompt-editor textarea:focus { outline: none; border-color: var(--primary); }
+    .prompt-meta {
+      font-size: 11px; color: var(--text-dim); margin: 4px 0 8px;
+      padding: 6px 10px; background: var(--card-bg-alt); border-radius: 4px;
+      line-height: 1.5;
+    }
+    .prompt-meta code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; color: var(--text); }
+    .prompt-meta b { color: var(--text); }
+    .placeholder-warn {
+      font-size: 12px; color: var(--failed-fg); margin: 4px 0;
+      padding: 6px 10px; background: var(--failed-bg); border-radius: 4px;
+      display: none;
+    }
+    .ext-edit-warn {
+      font-size: 12px; color: var(--warn-text); margin: 6px 0;
+      padding: 8px 12px; background: var(--warn-bg);
+      border-left: 3px solid var(--warn-border); border-radius: 4px;
+      display: none;
+    }
+    .ext-edit-warn button {
+      font-size: 11px; padding: 3px 10px; margin-left: 8px;
+      background: var(--warn-border); color: #5a4500; border: 0;
+      border-radius: 3px; cursor: pointer; font-weight: 600;
+    }
+
+    /* ── 안전 경고 모달 ── */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      z-index: 100; align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--card-bg); color: var(--text);
+      border-radius: 10px; padding: 20px 22px; max-width: 520px; width: 92%;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    }
+    .modal h3 { margin: 0 0 12px; font-size: 16px; color: var(--warn-text); }
+    .modal .warn-list {
+      background: var(--warn-bg); color: var(--warn-text);
+      padding: 10px 14px; border-radius: 6px; font-size: 13px;
+      border-left: 3px solid var(--warn-border);
+      max-height: 240px; overflow-y: auto;
+    }
+    .modal .warn-list div { margin: 6px 0; line-height: 1.5; }
+    .modal-actions {
+      display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
+    }
   </style>
 </head>
 <body>
@@ -382,7 +555,112 @@ HTML = r"""<!DOCTYPE html>
 
   <div class="info-bar">
     <span class="grow" id="provider-info">로딩 중...</span>
+    <button class="settings-toggle" onclick="togglePrompt()">📝 프롬프트</button>
+    <button class="settings-toggle" onclick="toggleSafety()">🛡️ 안전 가이드</button>
     <button class="settings-toggle" onclick="toggleSettings()">⚙️ 설정 변경</button>
+  </div>
+
+  <!-- 📝 프롬프트 편집 패널 (독립, 자동 저장) -->
+  <div class="prompt-panel" id="prompt-panel">
+    <div class="prompt-panel-head">
+      <h3>📝 요약 프롬프트 (실시간 편집)</h3>
+      <span class="save-status idle" id="save-status">준비</span>
+    </div>
+    <div class="prompt-meta">
+      파일: <code id="prompt-file-path">~/.config/chrome-applescript-summarizer/prompt.md</code>
+      · <span id="prompt-mtime">미저장</span><br>
+      필수 placeholder: <code>{url}</code> <code>{title}</code> <code>{body}</code> — 요약 시 자동 치환됨.
+      <b>이 파일은 텔레그램 봇(summarize.py)도 같이 읽음</b> — 한 번 편집하면 양쪽 모두 반영.
+      <span style="color:var(--done-fg)">✓ 자동 저장</span> (타이핑 멈추고 1.5초 후)
+    </div>
+    <div class="ext-edit-warn" id="ext-edit-warn">
+      <span>⚠️ 외부 에디터에서 파일이 수정된 것 같습니다. 화면 내용과 디스크가 다를 수 있어요.</span>
+      <button onclick="reloadPromptTemplate(true)">디스크에서 다시 로드</button>
+    </div>
+    <div class="prompt-editor">
+      <textarea id="prompt-textarea" placeholder="⏳ 로딩 중..." spellcheck="false"></textarea>
+      <div id="placeholder-warn" class="placeholder-warn">⚠️ 누락된 placeholder가 있습니다.</div>
+      <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
+        <button onclick="savePromptTemplate(true)" style="padding:6px 14px; font-size:12px">💾 즉시 저장</button>
+        <button class="secondary" onclick="resetPromptTemplate()" style="padding:6px 14px; font-size:12px">🔄 기본값으로 복원</button>
+        <button class="secondary" onclick="reloadPromptTemplate(true)" style="padding:6px 14px; font-size:12px">↻ 디스크에서 다시 로드</button>
+        <span style="margin-left:auto; font-size:11px; color:var(--text-dim)">
+          글자 수: <span id="prompt-char-count">0</span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 상단 Quick Bar: 자동 저장 즉시 토글 -->
+  <div class="quick-bar">
+    <label class="switch">
+      <input type="checkbox" id="quick-auto-save" onchange="quickToggleAutoSave()">
+      <span class="slider"></span>
+    </label>
+    <label class="toggle-label" for="quick-auto-save">💾 요약 자동 저장</label>
+    <span class="toggle-hint">
+      날짜별 누적 로그 — <code id="quick-save-target">~/Documents/Summaries/YYYY-MM-DD.md</code>
+    </span>
+    <div class="qb-actions">
+      <button class="mini" onclick="openSaveFolderQuick()">📂 폴더</button>
+      <button class="mini" onclick="openTodayLog()">📄 오늘 로그</button>
+    </div>
+  </div>
+
+  <div class="safety-banner" id="safety-banner" style="display:none">
+    <span class="grow" id="safety-banner-text"></span>
+    <button onclick="toggleSafety()">자세히</button>
+  </div>
+
+  <div class="safety-panel" id="safety-panel">
+    <h3>🛡️ 윤리적 사용 가이드</h3>
+    <p style="font-size:13px; color:var(--text-muted); margin:0 0 8px">
+      본 도구는 <b>본인이 정상적으로 접근 가능한 기사를 빠르게 요약하는 자가 제어 도구</b>입니다.
+      안전장치는 <b>차단이 아니라 경고</b>로 작동 — 사용자가 페이스를 인지하도록 돕는 게 목적입니다.
+    </p>
+    <ul>
+      <li><span class="ok">✓ 해야 할 것:</span> 본인 구독 권한 안에서만 사용 / 일일 도메인당 권장량 준수 / 평소 본인이 읽을 만한 페이스 유지</li>
+      <li><span class="no">✗ 하지 말 것:</span> 사이트 ToS의 "automated access" 금지 무시 / 대량 일괄 크롤링 / 탐지 회피 위장 / 본인 권한 없는 paywall 우회</li>
+    </ul>
+
+    <h3 style="margin-top:14px">📊 오늘 사용량 (도메인별)</h3>
+    <div id="usage-content"><span style="font-size:12px; color:var(--text-dim)">로딩 중...</span></div>
+
+    <h3 style="margin-top:14px">⚙️ 안전장치 한도 (사용자가 조정 가능)</h3>
+    <div class="settings-row">
+      <label>도메인/일 권장</label>
+      <input type="number" id="safety-per-domain" min="1" max="500">
+    </div>
+    <div class="settings-row">
+      <label>배치 권장</label>
+      <input type="number" id="safety-per-batch" min="1" max="200">
+    </div>
+    <div class="settings-row">
+      <label>도메인 최소 간격(초)</label>
+      <input type="number" id="safety-min-interval" min="0" max="120">
+    </div>
+    <div style="font-size:11px; color:var(--text-dim); margin:6px 0 10px">
+      한도 초과 시 <b>경고 모달이 떠서 확인 후 진행</b> — 차단 X. 같은 도메인 연속 호출 시 자동 대기.
+    </div>
+    <div class="settings-actions">
+      <button onclick="saveSafetyLimits()">한도 저장</button>
+      <button class="secondary" onclick="toggleSafety()">닫기</button>
+    </div>
+  </div>
+
+  <!-- 큐 추가 시 한도 초과 경고 모달 -->
+  <div class="modal-backdrop" id="warn-modal">
+    <div class="modal">
+      <h3>⚠️ 사용량 권장 한도 초과</h3>
+      <div class="warn-list" id="warn-list"></div>
+      <p style="font-size:12px; color:var(--text-muted); margin:12px 0 0">
+        그래도 진행할 수 있지만, 사이트 ToS / IP 차단 위험은 사용자 본인 책임입니다.
+      </p>
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeWarnModal()">취소</button>
+        <button onclick="confirmEnqueue()">그래도 진행</button>
+      </div>
+    </div>
   </div>
 
   <div class="settings-panel" id="settings-panel">
@@ -403,16 +681,24 @@ HTML = r"""<!DOCTYPE html>
 
     <h3 style="margin-top:18px">📁 요약 파일 저장</h3>
     <div class="settings-row">
-      <label>자동 저장</label>
-      <div style="flex:1; display:flex; align-items:center; gap:8px">
-        <input type="checkbox" id="auto-save-check" style="width:auto; flex:0">
-        <span style="font-size:12px; color:var(--text-muted)">완료된 모든 요약을 자동으로 마크다운 파일로 저장</span>
-      </div>
+      <label>저장 모드</label>
+      <select id="save-mode-select">
+        <option value="daily_log">날짜별 누적 로그 (권장 — 하루 한 파일)</option>
+        <option value="per_article">기사 1건당 1파일 (구버전 방식)</option>
+      </select>
     </div>
     <div class="settings-row">
       <label>저장 폴더</label>
       <input type="text" id="save-dir-input" placeholder="~/Documents/Summaries">
       <button class="secondary" onclick="openSaveFolder()" style="padding:8px 14px; font-size:12px">📂 열기</button>
+    </div>
+    <div style="font-size:11px; color:var(--text-dim); margin:4px 0 8px">
+      💡 <b>날짜별 누적 로그</b>: 같은 날 요약된 모든 기사가 <code>YYYY-MM-DD.md</code> 한 파일에 시간순으로 append.
+      자동 저장 ON/OFF는 화면 상단 토글에서.
+    </div>
+
+    <div style="font-size:11px; color:var(--text-dim); margin:8px 0">
+      💡 요약 프롬프트 형식 편집은 상단 [📝 프롬프트] 버튼에서.
     </div>
 
     <div class="settings-actions">
@@ -503,6 +789,58 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       const meta = PROVIDERS_META[p] || {};
       const label = meta.label || p;
       providerInfo.innerHTML = `현재 인증: <code>${label}</code> / model: <code>${CURRENT_CFG.model || 'default'}</code>`;
+      updateQuickBar();
+    }
+
+    // ── 상단 Quick Bar (자동 저장) ──
+    function updateQuickBar() {
+      const checkbox = document.getElementById('quick-auto-save');
+      checkbox.checked = !!CURRENT_CFG.auto_save;
+      const dir = CURRENT_CFG.save_dir || '~/Documents/Summaries';
+      const mode = CURRENT_CFG.save_mode || 'daily_log';
+      const today = new Date().toISOString().slice(0, 10);
+      const target = mode === 'daily_log'
+        ? `${dir}/${today}.md`
+        : `${dir}/{시각}_{도메인}.md`;
+      document.getElementById('quick-save-target').textContent = target;
+    }
+
+    async function quickToggleAutoSave() {
+      const enabled = document.getElementById('quick-auto-save').checked;
+      const merged = Object.assign({}, CURRENT_CFG, {auto_save: enabled});
+      // 필수 필드 보장 (provider 등)
+      if (!merged.provider) merged.provider = Object.keys(PROVIDERS_META)[0] || 'claude_cli';
+      const res = await fetch('/config', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(merged),
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert('저장 실패: ' + data.error);
+        document.getElementById('quick-auto-save').checked = !enabled;  // 롤백
+        return;
+      }
+      CURRENT_CFG.auto_save = enabled;
+      updateQuickBar();
+    }
+
+    async function openSaveFolderQuick() {
+      const folder = CURRENT_CFG.save_dir || '~/Documents/Summaries';
+      await fetch('/open-folder', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({folder}),
+      });
+    }
+
+    async function openTodayLog() {
+      const dir = CURRENT_CFG.save_dir || '~/Documents/Summaries';
+      const today = new Date().toISOString().slice(0, 10);
+      const res = await fetch('/open-file', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: `${dir}/${today}.md`}),
+      });
+      const data = await res.json();
+      if (data.error) alert('파일 열기 실패: ' + data.error);
     }
 
     async function toggleSettings() {
@@ -552,8 +890,182 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       document.getElementById('model-select').value = CURRENT_CFG.model || PROVIDERS_META[provSel.value].default_model;
       document.getElementById('api-key-input').value = CURRENT_CFG.api_key || '';
       // 저장 옵션
-      document.getElementById('auto-save-check').checked = !!CURRENT_CFG.auto_save;
+      document.getElementById('save-mode-select').value = CURRENT_CFG.save_mode || 'daily_log';
       document.getElementById('save-dir-input').value = CURRENT_CFG.save_dir || '~/Documents/Summaries';
+    }
+
+    // ── 📝 프롬프트 편집기 (실시간 자동 저장) ──
+    let _LAST_SAVED_TEXT = '';   // 마지막으로 저장된 본문
+    let _LAST_KNOWN_MTIME = 0;   // 마지막으로 본 디스크 mtime
+    let _SAVE_TIMER = null;
+    let _IS_TYPING = false;
+
+    function setSaveStatus(state, text) {
+      const el = document.getElementById('save-status');
+      el.className = 'save-status ' + state;
+      el.textContent = text;
+    }
+
+    function updateCharCount() {
+      const ta = document.getElementById('prompt-textarea');
+      document.getElementById('prompt-char-count').textContent = ta.value.length;
+    }
+
+    function fmtMtime(ts) {
+      if (!ts) return '미저장';
+      const d = new Date(ts * 1000);
+      const today = new Date();
+      const same = d.toDateString() === today.toDateString();
+      const time = d.toLocaleTimeString('ko-KR', {hour12: false});
+      return same ? `오늘 ${time} 저장` : `${d.toLocaleDateString('ko-KR')} ${time} 저장`;
+    }
+
+    async function togglePrompt() {
+      const panel = document.getElementById('prompt-panel');
+      panel.classList.toggle('open');
+      if (panel.classList.contains('open')) {
+        await reloadPromptTemplate(false);
+      }
+    }
+
+    async function reloadPromptTemplate(showAlert = false) {
+      const ta = document.getElementById('prompt-textarea');
+      try {
+        const r = await fetch('/prompt-template');
+        const data = await r.json();
+        if (data.error) throw new Error(data.error);
+
+        ta.value = data.text || '';
+        _LAST_SAVED_TEXT = ta.value;
+        _LAST_KNOWN_MTIME = data.mtime || 0;
+        document.getElementById('prompt-file-path').textContent = data.path;
+        document.getElementById('prompt-mtime').textContent = fmtMtime(data.mtime);
+        document.getElementById('ext-edit-warn').style.display = 'none';
+
+        // 이벤트 핸들러는 한 번만 (idempotent)
+        if (!ta._wired) {
+          ta._wired = true;
+          ta.addEventListener('input', onPromptInput);
+        }
+        checkPlaceholders();
+        updateCharCount();
+        setSaveStatus('saved', '✓ 저장됨');
+        if (showAlert) console.log('프롬프트 다시 로드됨');
+      } catch (e) {
+        ta.value = '로딩 실패: ' + e;
+        setSaveStatus('error', '오류');
+      }
+    }
+
+    function onPromptInput() {
+      _IS_TYPING = true;
+      const text = document.getElementById('prompt-textarea').value;
+      checkPlaceholders();
+      updateCharCount();
+
+      if (text === _LAST_SAVED_TEXT) {
+        setSaveStatus('saved', '✓ 저장됨');
+        return;
+      }
+      setSaveStatus('dirty', '● 수정 중');
+
+      // debounce: 1.5초간 입력 멈추면 자동 저장
+      if (_SAVE_TIMER) clearTimeout(_SAVE_TIMER);
+      _SAVE_TIMER = setTimeout(() => {
+        _IS_TYPING = false;
+        savePromptTemplate(false);
+      }, 1500);
+    }
+
+    function checkPlaceholders() {
+      const text = document.getElementById('prompt-textarea').value;
+      const missing = ['{url}', '{title}', '{body}'].filter(p => !text.includes(p));
+      const warn = document.getElementById('placeholder-warn');
+      if (missing.length > 0) {
+        warn.style.display = 'block';
+        warn.textContent = '⚠️ 누락된 placeholder: ' + missing.join(', ') + ' — 저장 안 됨 (LLM 호출 깨짐 방지)';
+        return false;
+      } else {
+        warn.style.display = 'none';
+        return true;
+      }
+    }
+
+    async function savePromptTemplate(notifyOnSuccess = false) {
+      const text = document.getElementById('prompt-textarea').value;
+      if (!checkPlaceholders()) {
+        setSaveStatus('error', '저장 안 됨');
+        return;
+      }
+      setSaveStatus('saving', '저장 중...');
+      try {
+        const r = await fetch('/prompt-template', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({text}),
+        });
+        const data = await r.json();
+        if (data.error) {
+          setSaveStatus('error', '오류');
+          if (notifyOnSuccess) alert('저장 실패: ' + data.error);
+          return;
+        }
+        _LAST_SAVED_TEXT = text;
+        _LAST_KNOWN_MTIME = data.mtime || 0;
+        document.getElementById('prompt-mtime').textContent = fmtMtime(data.mtime);
+        setSaveStatus('saved', '✓ 저장됨');
+        if (notifyOnSuccess) {
+          // 잠시 강조 표시
+          setSaveStatus('saved', '✓ 즉시 저장 완료');
+          setTimeout(() => setSaveStatus('saved', '✓ 저장됨'), 1500);
+        }
+      } catch (e) {
+        setSaveStatus('error', '오류');
+        if (notifyOnSuccess) alert('저장 호출 실패: ' + e);
+      }
+    }
+
+    async function resetPromptTemplate() {
+      if (!confirm('현재 편집 중인 내용이 사라지고 기본 프롬프트로 복원됩니다. 진행할까요?')) return;
+      try {
+        const r = await fetch('/prompt-template/reset', {method: 'POST'});
+        const data = await r.json();
+        if (data.error) {
+          alert('초기화 실패: ' + data.error);
+          return;
+        }
+        await reloadPromptTemplate(false);
+        setSaveStatus('saved', '✓ 기본값 복원');
+        setTimeout(() => setSaveStatus('saved', '✓ 저장됨'), 2000);
+      } catch (e) { alert('호출 실패: ' + e); }
+    }
+
+    // 외부 에디터 수정 감지 — 패널 열려있을 때 5초마다 mtime 폴링
+    async function checkExternalEdit() {
+      const panel = document.getElementById('prompt-panel');
+      if (!panel.classList.contains('open')) return;
+      if (_IS_TYPING) return;  // 사용자 타이핑 중이면 건드리지 않음
+      try {
+        const r = await fetch('/prompt-template');
+        const data = await r.json();
+        if (data.mtime && _LAST_KNOWN_MTIME && data.mtime > _LAST_KNOWN_MTIME + 0.5) {
+          // 외부에서 더 최근에 저장됨
+          const ta = document.getElementById('prompt-textarea');
+          if (ta.value === _LAST_SAVED_TEXT) {
+            // 사용자가 편집 안 한 상태 → 자동으로 새 내용 가져옴
+            ta.value = data.text;
+            _LAST_SAVED_TEXT = data.text;
+            _LAST_KNOWN_MTIME = data.mtime;
+            document.getElementById('prompt-mtime').textContent = fmtMtime(data.mtime);
+            checkPlaceholders();
+            updateCharCount();
+            setSaveStatus('saved', '↻ 외부 갱신됨');
+            setTimeout(() => setSaveStatus('saved', '✓ 저장됨'), 2500);
+          } else {
+            // 사용자가 편집 중인 채로 외부 변경 → 충돌 경고만 (덮어쓰지 않음)
+            document.getElementById('ext-edit-warn').style.display = 'block';
+          }
+        }
+      } catch (e) { /* skip */ }
     }
 
     async function openSaveFolder() {
@@ -623,27 +1135,29 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       const provider = document.getElementById('provider-select').value;
       const model = document.getElementById('model-select').value;
       const api_key = document.getElementById('api-key-input').value.trim();
-      const auto_save = document.getElementById('auto-save-check').checked;
+      const save_mode = document.getElementById('save-mode-select').value;
       const save_dir = document.getElementById('save-dir-input').value.trim() || '~/Documents/Summaries';
       const meta = PROVIDERS_META[provider];
       if (meta.needs_key && !api_key) {
         alert('이 Provider는 API 키 입력이 필요합니다.');
         return;
       }
+      // auto_save / safety는 그대로 유지 (상단 토글 / 안전 패널이 관리)
+      const merged = Object.assign({}, CURRENT_CFG, {
+        provider, model, api_key: meta.needs_key ? api_key : '',
+        save_mode, save_dir,
+      });
       const res = await fetch('/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          provider, model, api_key: meta.needs_key ? api_key : '',
-          auto_save, save_dir,
-        }),
+        body: JSON.stringify(merged),
       });
       const data = await res.json();
       if (data.error) {
         alert('저장 실패: ' + data.error);
         return;
       }
-      CURRENT_CFG = {provider, model, api_key: meta.needs_key ? api_key : '', auto_save, save_dir};
+      CURRENT_CFG = merged;
       updateInfoBar();
       toggleSettings();
     }
@@ -670,9 +1184,11 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       }
     }
 
-    async function enqueueAll() {
+    let PENDING_URLS = [];  // 경고 모달에서 확인 대기 중인 URL들
+
+    async function enqueueAll(force = false) {
       const text = ta.value;
-      const urls = (text.match(/https?:\/\/\S+/g) || []).map(u => u.replace(/[.,);]+$/, ''));
+      const urls = force ? PENDING_URLS : (text.match(/https?:\/\/\S+/g) || []).map(u => u.replace(/[.,);]+$/, ''));
       if (urls.length === 0) {
         alert('URL이 없습니다 (http:// 또는 https://로 시작해야 함)');
         return;
@@ -682,16 +1198,122 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
         const res = await fetch('/enqueue', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({urls}),
+          body: JSON.stringify({urls, force}),
         });
         const data = await res.json();
+        if (data.needs_confirm) {
+          // 안전 경고 — 모달 열기
+          PENDING_URLS = urls;
+          showWarnModal(data.warnings || []);
+          return;
+        }
         ta.value = '';
+        PENDING_URLS = [];
         refresh();
+        loadSafetyStats();  // 사용량 갱신
       } catch (e) {
         alert('큐 추가 실패: ' + e);
       } finally {
         btn.disabled = false;
       }
+    }
+
+    function showWarnModal(warnings) {
+      const list = document.getElementById('warn-list');
+      list.innerHTML = warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('');
+      document.getElementById('warn-modal').classList.add('open');
+    }
+    function closeWarnModal() {
+      document.getElementById('warn-modal').classList.remove('open');
+      PENDING_URLS = [];
+    }
+    async function confirmEnqueue() {
+      document.getElementById('warn-modal').classList.remove('open');
+      await enqueueAll(true);
+    }
+
+    // ── 안전 패널 ──
+    async function toggleSafety() {
+      const panel = document.getElementById('safety-panel');
+      panel.classList.toggle('open');
+      if (panel.classList.contains('open')) {
+        await loadSafetyStats();
+      }
+    }
+
+    async function loadSafetyStats() {
+      try {
+        const res = await fetch('/safety-stats');
+        const data = await res.json();
+        const limits = data.limits || {};
+        const today = data.today || {};
+
+        // 한도 input 채우기
+        document.getElementById('safety-per-domain').value = limits.per_domain_per_day;
+        document.getElementById('safety-per-batch').value = limits.per_batch;
+        document.getElementById('safety-min-interval').value = limits.min_interval_same_domain_sec;
+
+        // 사용량 테이블
+        const domains = Object.keys(today).sort((a,b) => today[b] - today[a]);
+        const cap = limits.per_domain_per_day || 50;
+        const target = document.getElementById('usage-content');
+        if (domains.length === 0) {
+          target.innerHTML = '<span style="font-size:12px; color:var(--text-dim)">오늘 사용 내역이 없습니다.</span>';
+        } else {
+          let html = '<table class="usage-table"><thead><tr><th>도메인</th><th style="text-align:right">오늘 / 권장</th><th style="width:40%">사용률</th></tr></thead><tbody>';
+          let totalToday = 0;
+          let warnCount = 0;
+          domains.forEach(d => {
+            const n = today[d];
+            totalToday += n;
+            const pct = Math.min(100, Math.round(n / cap * 100));
+            const cls = pct >= 100 ? 'danger' : (pct >= 80 ? 'warn' : '');
+            if (pct >= 80) warnCount++;
+            html += `<tr><td><code>${escapeHtml(d)}</code></td><td style="text-align:right">${n} / ${cap}</td><td><span class="bar ${cls}" style="width:${pct}%"></span> ${pct}%</td></tr>`;
+          });
+          html += '</tbody></table>';
+          target.innerHTML = html;
+
+          // 배너 업데이트
+          updateSafetyBanner(warnCount, totalToday);
+        }
+      } catch (e) { /* skip */ }
+    }
+
+    function updateSafetyBanner(warnCount, totalToday) {
+      const banner = document.getElementById('safety-banner');
+      const txt = document.getElementById('safety-banner-text');
+      if (warnCount > 0) {
+        banner.style.display = 'flex';
+        txt.textContent = `🛡️ ${warnCount}개 도메인이 권장 한도의 80%를 넘었습니다 (오늘 총 ${totalToday}건). 페이스 조절 권장.`;
+      } else if (totalToday >= 30) {
+        banner.style.display = 'flex';
+        txt.textContent = `🛡️ 오늘 ${totalToday}건 처리됨. 본인 평소 페이스를 유지하세요.`;
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+
+    async function saveSafetyLimits() {
+      const safety = {
+        soft_limit_per_domain_per_day: parseInt(document.getElementById('safety-per-domain').value) || 50,
+        soft_limit_per_batch: parseInt(document.getElementById('safety-per-batch').value) || 20,
+        min_interval_same_domain_sec: parseInt(document.getElementById('safety-min-interval').value) || 0,
+      };
+      // 현재 cfg에 safety만 덮어 저장
+      const merged = Object.assign({}, CURRENT_CFG, {safety});
+      const res = await fetch('/config', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(merged),
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert('한도 저장 실패: ' + data.error);
+        return;
+      }
+      CURRENT_CFG.safety = safety;
+      alert('✓ 안전장치 한도 저장됨');
+      loadSafetyStats();
     }
 
     async function clearFinished() {
@@ -779,8 +1401,19 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
 
     loadProviderInfo();
     refresh();
+    loadSafetyStats();
     // 진행 상황 자동 polling (1.5초)
     setInterval(refresh, 1500);
+    // 사용량 배너 갱신 (15초)
+    setInterval(loadSafetyStats, 15000);
+    // 외부 에디터 수정 감지 (5초, 패널 열려있고 타이핑 중 아닐 때만)
+    setInterval(checkExternalEdit, 5000);
+    // 페이지 떠나기 전 미저장 변경 있으면 강제 flush
+    window.addEventListener('beforeunload', (e) => {
+      if (_LAST_SAVED_TEXT !== document.getElementById('prompt-textarea').value) {
+        savePromptTemplate(false);
+      }
+    });
   </script>
 </body>
 </html>"""
@@ -811,6 +1444,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "key_url": v.get("key_url", ""),
                 }
             self._send_json(out)
+        elif path == "/prompt-template":
+            try:
+                text = load_prompt_template()
+                mtime = PROMPT_FILE.stat().st_mtime if PROMPT_FILE.exists() else 0
+                exists = PROMPT_FILE.exists()
+                self._send_json({
+                    "text": text,
+                    "path": str(PROMPT_FILE),
+                    "is_default": text == DEFAULT_PROMPT_TEMPLATE,
+                    "mtime": mtime,
+                    "exists": exists,
+                })
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/safety-stats":
+            cfg = load_config()
+            safety = cfg.get("safety", {})
+            self._send_json({
+                "today": get_today_stats(),
+                "limits": {
+                    "per_domain_per_day": safety.get(
+                        "soft_limit_per_domain_per_day",
+                        SAFETY_DEFAULTS["soft_limit_per_domain_per_day"]),
+                    "per_batch": safety.get(
+                        "soft_limit_per_batch",
+                        SAFETY_DEFAULTS["soft_limit_per_batch"]),
+                    "min_interval_same_domain_sec": safety.get(
+                        "min_interval_same_domain_sec",
+                        SAFETY_DEFAULTS["min_interval_same_domain_sec"]),
+                },
+            })
         elif path == "/cli-status":
             statuses = []
             for name, checker in [("Claude Code", check_claude_cli), ("Codex (ChatGPT)", check_codex_cli), ("Gemini CLI", check_gemini_cli)]:
@@ -830,6 +1494,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 body = self._read_json()
                 urls = body.get("urls", [])
+                force = bool(body.get("force", False))  # 경고 무시 강제 진행
                 # 정규화 + 중복 제거 (동일 큐 내)
                 seen = set()
                 clean = []
@@ -838,6 +1503,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if u.startswith("http") and u not in seen:
                         seen.add(u)
                         clean.append(u)
+                # 안전장치 검사 (차단 X — 경고만 + 사용자 확인 후 force=true로 재호출)
+                cfg = load_config()
+                warnings = check_safety_warnings(clean, cfg)
+                if warnings and not force:
+                    self._send_json({"warnings": warnings, "count": len(clean), "needs_confirm": True})
+                    return
                 ids = _enqueue_urls(clean)
                 self._send_json({"job_ids": ids, "count": len(ids)})
             except Exception as e:
@@ -876,6 +1547,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 with _jobs_lock:
                     job["saved_path"] = path
                 self._send_json({"saved_path": path})
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/prompt-template":
+            try:
+                body = self._read_json()
+                text = body.get("text", "")
+                if not text.strip():
+                    self._send_json({"error": "프롬프트가 비어있음"})
+                    return
+                p = save_prompt_template(text)
+                mtime = PROMPT_FILE.stat().st_mtime
+                self._send_json({"ok": True, "path": p, "mtime": mtime})
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/prompt-template/reset":
+            try:
+                p = reset_prompt_template()
+                mtime = PROMPT_FILE.stat().st_mtime
+                self._send_json({"ok": True, "path": p, "mtime": mtime})
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/open-file":
+            try:
+                body = self._read_json()
+                target = body.get("path", "")
+                p = Path(target).expanduser()
+                if not p.exists():
+                    self._send_json({"error": f"파일이 아직 없음: {p} (요약 1건 이상 자동 저장 후 생성됨)"})
+                    return
+                subprocess.run(["open", str(p)])
+                self._send_json({"opened": str(p)})
             except Exception as e:
                 self._send_json({"error": str(e)})
         elif path == "/open-folder":
@@ -917,18 +1619,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/config":
             try:
                 body = self._read_json()
-                provider = body.get("provider", "")
-                model = body.get("model", "")
-                api_key = body.get("api_key", "")
-                auto_save = bool(body.get("auto_save", False))
-                save_dir = body.get("save_dir", "").strip() or DEFAULT_SAVE_DIR
+                old = load_config()
+                provider = body.get("provider", old.get("provider", ""))
+                model = body.get("model", old.get("model", ""))
+                api_key = body.get("api_key", old.get("api_key", ""))
+                auto_save = bool(body.get("auto_save", old.get("auto_save", False)))
+                save_dir = (body.get("save_dir") or old.get("save_dir") or DEFAULT_SAVE_DIR).strip() or DEFAULT_SAVE_DIR
+                save_mode = body.get("save_mode") or old.get("save_mode") or "daily_log"
+                if save_mode not in ("daily_log", "per_article"):
+                    save_mode = "daily_log"
                 if provider not in PROVIDERS:
                     raise ValueError(f"unknown provider: {provider}")
                 if PROVIDERS[provider].get("needs_key") and not api_key:
                     raise ValueError("API 키 필요")
+                # 안전장치 설정 (요청에 없으면 기존값 유지)
+                old_safety = old.get("safety", {})
+                safety_in = body.get("safety") or old_safety
+                safety = {
+                    "soft_limit_per_domain_per_day": int(
+                        safety_in.get("soft_limit_per_domain_per_day",
+                                      SAFETY_DEFAULTS["soft_limit_per_domain_per_day"])
+                    ),
+                    "soft_limit_per_batch": int(
+                        safety_in.get("soft_limit_per_batch",
+                                      SAFETY_DEFAULTS["soft_limit_per_batch"])
+                    ),
+                    "min_interval_same_domain_sec": int(
+                        safety_in.get("min_interval_same_domain_sec",
+                                      SAFETY_DEFAULTS["min_interval_same_domain_sec"])
+                    ),
+                }
                 cfg = {
                     "provider": provider, "model": model, "api_key": api_key,
                     "auto_save": auto_save, "save_dir": save_dir,
+                    "save_mode": save_mode,
+                    "safety": safety,
                 }
                 save_config(cfg)
                 self._send_json({"ok": True, "config": cfg})
