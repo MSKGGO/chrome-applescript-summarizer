@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-This software does NOT include any anti-bot detection bypass, fingerprint
-spoofing, or "human behavior simulation" code by design. It uses the user's
-own browser session and their own LLM API credentials. Users are responsible
-for complying with the Terms of Service of any websites they access using this
-tool, and with the usage policies of their chosen LLM provider.
