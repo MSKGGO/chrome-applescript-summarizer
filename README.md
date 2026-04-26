@@ -77,7 +77,10 @@ python3 app.py
 2. **(폴백) API 키 직접 입력** — Claude Code 못 쓰는 환경용
    - **Anthropic:** https://console.anthropic.com/settings/keys
    - **OpenAI:** https://platform.openai.com/api-keys
+   - **Google Gemini:** https://aistudio.google.com/apikey (무료 티어 후함, 60 RPM)
    - 비용은 본인 API 계정에 청구
+
+> **OAuth가 가능한 건 Claude Code뿐**입니다. OpenAI/Google AI Studio는 third-party 앱 OAuth 미지원이라 API 키 방식만. Gemini는 무료 티어가 후해서 키 받기만 하면 사실상 무료로 쓸 수 있어요.
 
 설정은 `~/.config/chrome-applescript-summarizer/config.json` (chmod 600)에 본인 기기에만 저장. 외부 전송 X.
 

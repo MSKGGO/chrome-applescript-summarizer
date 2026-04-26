@@ -93,6 +93,13 @@ PROVIDERS = {
         "needs_key": True,
         "key_url": "https://platform.openai.com/api-keys",
     },
+    "gemini": {
+        "label": "Google Gemini (API key, 무료 티어 후함)",
+        "default_model": "gemini-2.5-flash",
+        "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        "needs_key": True,
+        "key_url": "https://aistudio.google.com/apikey",
+    },
 }
 
 
@@ -241,6 +248,25 @@ def call_openai(api_key: str, prompt: str, model: str) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+def call_gemini(api_key: str, prompt: str, model: str) -> str:
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Gemini API {e.code}: {e.read().decode(errors='ignore')[:300]}")
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Gemini 응답 파싱 실패: {str(data)[:300]}")
+
+
 def summarize_url(url: str, cfg: dict) -> str:
     data = fetch_body(url)
     body = (data.get("body") or "").strip()
@@ -268,6 +294,11 @@ def summarize_url(url: str, cfg: dict) -> str:
         if not api_key:
             raise RuntimeError("OpenAI API 키가 설정 안 됨")
         return call_openai(api_key, prompt, model)
+    elif provider == "gemini":
+        api_key = cfg.get("api_key", "")
+        if not api_key:
+            raise RuntimeError("Gemini API 키가 설정 안 됨")
+        return call_gemini(api_key, prompt, model)
     raise ValueError(f"unknown provider: {provider}")
 
 
