@@ -34,6 +34,7 @@ from app import (
     summarize_url, load_config, save_config,
     auto_detect_oauth_provider, PROVIDERS,
     check_claude_cli, check_codex_cli, check_gemini_cli,
+    save_summary_to_file, DEFAULT_SAVE_DIR,
 )
 
 PORT = 8765
@@ -68,6 +69,21 @@ _worker_thread = None
 _URL_RE = re.compile(r"https?://\S+")
 
 
+def _extract_title(result: str) -> str:
+    """요약 결과 첫 줄(보통 **제목**)에서 제목만 발췌."""
+    if not result:
+        return ""
+    first = result.strip().splitlines()[0].strip()
+    # **제목** 또는 # 제목 형태에서 제목만
+    m = re.match(r"^\*+\s*(.+?)\s*\*+$", first)
+    if m:
+        return m.group(1)
+    m = re.match(r"^#+\s*(.+)$", first)
+    if m:
+        return m.group(1)
+    return first[:80]
+
+
 def _worker_loop():
     while True:
         job_id = _job_queue.get()
@@ -84,6 +100,19 @@ def _worker_loop():
             with _jobs_lock:
                 job["result"] = result
                 job["status"] = "done"
+            # 자동 저장 옵션이 켜져 있으면 파일로
+            if cfg.get("auto_save"):
+                try:
+                    title = _extract_title(result)
+                    saved_path = save_summary_to_file(
+                        job["url"], title, result, cfg,
+                        cfg.get("save_dir", DEFAULT_SAVE_DIR),
+                    )
+                    with _jobs_lock:
+                        job["saved_path"] = saved_path
+                except Exception as e:
+                    with _jobs_lock:
+                        job["save_error"] = str(e)
         except Exception as e:
             with _jobs_lock:
                 job["error"] = str(e)
@@ -371,6 +400,21 @@ HTML = r"""<!DOCTYPE html>
       <label>API 키</label>
       <input type="password" id="api-key-input" placeholder="(OAuth 사용 시 비워두세요)">
     </div>
+
+    <h3 style="margin-top:18px">📁 요약 파일 저장</h3>
+    <div class="settings-row">
+      <label>자동 저장</label>
+      <div style="flex:1; display:flex; align-items:center; gap:8px">
+        <input type="checkbox" id="auto-save-check" style="width:auto; flex:0">
+        <span style="font-size:12px; color:var(--text-muted)">완료된 모든 요약을 자동으로 마크다운 파일로 저장</span>
+      </div>
+    </div>
+    <div class="settings-row">
+      <label>저장 폴더</label>
+      <input type="text" id="save-dir-input" placeholder="~/Documents/Summaries">
+      <button class="secondary" onclick="openSaveFolder()" style="padding:8px 14px; font-size:12px">📂 열기</button>
+    </div>
+
     <div class="settings-actions">
       <button onclick="saveSettings()">저장</button>
       <button class="secondary" onclick="toggleSettings()">취소</button>
@@ -507,6 +551,17 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       // 현재 model/api_key 채우기
       document.getElementById('model-select').value = CURRENT_CFG.model || PROVIDERS_META[provSel.value].default_model;
       document.getElementById('api-key-input').value = CURRENT_CFG.api_key || '';
+      // 저장 옵션
+      document.getElementById('auto-save-check').checked = !!CURRENT_CFG.auto_save;
+      document.getElementById('save-dir-input').value = CURRENT_CFG.save_dir || '~/Documents/Summaries';
+    }
+
+    async function openSaveFolder() {
+      const folder = document.getElementById('save-dir-input').value.trim() || '~/Documents/Summaries';
+      await fetch('/open-folder', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({folder}),
+      });
     }
 
     function onProviderChange() {
@@ -568,6 +623,8 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       const provider = document.getElementById('provider-select').value;
       const model = document.getElementById('model-select').value;
       const api_key = document.getElementById('api-key-input').value.trim();
+      const auto_save = document.getElementById('auto-save-check').checked;
+      const save_dir = document.getElementById('save-dir-input').value.trim() || '~/Documents/Summaries';
       const meta = PROVIDERS_META[provider];
       if (meta.needs_key && !api_key) {
         alert('이 Provider는 API 키 입력이 필요합니다.');
@@ -576,16 +633,41 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       const res = await fetch('/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({provider, model, api_key: meta.needs_key ? api_key : ''}),
+        body: JSON.stringify({
+          provider, model, api_key: meta.needs_key ? api_key : '',
+          auto_save, save_dir,
+        }),
       });
       const data = await res.json();
       if (data.error) {
         alert('저장 실패: ' + data.error);
         return;
       }
-      CURRENT_CFG = {provider, model, api_key: meta.needs_key ? api_key : ''};
+      CURRENT_CFG = {provider, model, api_key: meta.needs_key ? api_key : '', auto_save, save_dir};
       updateInfoBar();
       toggleSettings();
+    }
+
+    async function saveJob(jobId) {
+      const btn = document.querySelector(`#job-${jobId} .save-btn`);
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 저장 중...'; }
+      try {
+        const res = await fetch('/save-job', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({job_id: jobId}),
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert('저장 실패: ' + data.error);
+          if (btn) { btn.disabled = false; btn.textContent = '💾 파일 저장'; }
+        } else {
+          if (btn) { btn.textContent = '✓ 저장됨'; }
+          refresh();  // saved_path 표시 업데이트
+        }
+      } catch (e) {
+        alert('저장 호출 실패: ' + e);
+        if (btn) { btn.disabled = false; btn.textContent = '💾 파일 저장'; }
+      }
     }
 
     async function enqueueAll() {
@@ -649,6 +731,14 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       jobsEl.innerHTML = jobs.map(j => {
         const elapsed = fmtElapsed(j.started_at, j.finished_at);
         const created = fmtTime(j.created_at);
+        const savedBadge = j.saved_path
+          ? `<div style="font-size:11px; color:var(--done-fg); margin-top:6px">💾 저장됨: <code>${escapeHtml(j.saved_path)}</code></div>`
+          : '';
+        const actions = j.result ? `
+          <div style="display:flex; gap:6px; margin-top:8px">
+            <button class="copy-btn" onclick="copyJob('${j.id}')">📋 복사</button>
+            ${!j.saved_path ? `<button class="copy-btn save-btn" onclick="saveJob('${j.id}')">💾 파일 저장</button>` : ''}
+          </div>` : '';
         return `
           <div class="job ${j.status}" id="job-${j.id}">
             <div class="job-head">
@@ -656,9 +746,11 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
               <span class="job-url">${escapeHtml(j.url)}</span>
               <span class="job-time">${created}${elapsed ? ' · ' + elapsed : ''}</span>
             </div>
-            ${j.result ? `<div class="job-result">${escapeHtml(j.result)}</div>
-              <button class="copy-btn" onclick="copyJob('${j.id}')">📋 복사</button>` : ''}
+            ${j.result ? `<div class="job-result">${escapeHtml(j.result)}</div>` : ''}
+            ${savedBadge}
+            ${actions}
             ${j.error ? `<div class="job-error">❌ ${escapeHtml(j.error)}</div>` : ''}
+            ${j.save_error ? `<div class="job-error">💾 자동저장 실패: ${escapeHtml(j.save_error)}</div>` : ''}
           </div>
         `;
       }).join('');
@@ -768,6 +860,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/clear-finished":
             n = _clear_finished()
             self._send_json({"cleared": n})
+        elif path == "/save-job":
+            try:
+                body = self._read_json()
+                jid = body.get("job_id")
+                with _jobs_lock:
+                    job = _jobs.get(jid)
+                if not job or not job.get("result"):
+                    self._send_json({"error": "작업이 없거나 결과 없음"})
+                    return
+                cfg = load_config()
+                title = _extract_title(job["result"])
+                save_dir = body.get("save_dir") or cfg.get("save_dir", DEFAULT_SAVE_DIR)
+                path = save_summary_to_file(job["url"], title, job["result"], cfg, save_dir)
+                with _jobs_lock:
+                    job["saved_path"] = path
+                self._send_json({"saved_path": path})
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/open-folder":
+            # 저장 폴더를 Finder로 열기
+            try:
+                body = self._read_json()
+                folder = body.get("folder") or load_config().get("save_dir", DEFAULT_SAVE_DIR)
+                p = Path(folder).expanduser()
+                p.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["open", str(p)])
+                self._send_json({"opened": str(p)})
+            except Exception as e:
+                self._send_json({"error": str(e)})
         elif path == "/install-cli":
             try:
                 body = self._read_json()
@@ -799,11 +920,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 provider = body.get("provider", "")
                 model = body.get("model", "")
                 api_key = body.get("api_key", "")
+                auto_save = bool(body.get("auto_save", False))
+                save_dir = body.get("save_dir", "").strip() or DEFAULT_SAVE_DIR
                 if provider not in PROVIDERS:
                     raise ValueError(f"unknown provider: {provider}")
                 if PROVIDERS[provider].get("needs_key") and not api_key:
                     raise ValueError("API 키 필요")
-                cfg = {"provider": provider, "model": model, "api_key": api_key}
+                cfg = {
+                    "provider": provider, "model": model, "api_key": api_key,
+                    "auto_save": auto_save, "save_dir": save_dir,
+                }
                 save_config(cfg)
                 self._send_json({"ok": True, "config": cfg})
             except Exception as e:

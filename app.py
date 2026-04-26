@@ -22,6 +22,7 @@ USAGE:
   # 또는 Summarizer.command 더블클릭
 """
 import os
+import re
 import sys
 import json
 import shutil
@@ -29,7 +30,9 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse as _urlparse
 
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
@@ -353,6 +356,39 @@ def summarize_url(url: str, cfg: dict) -> str:
     elif provider == "gemini":
         return call_gemini(cfg.get("api_key", ""), prompt, model)
     raise ValueError(f"unknown provider: {provider}")
+
+
+DEFAULT_SAVE_DIR = "~/Documents/Summaries"
+
+
+def save_summary_to_file(url: str, title: str, result: str, cfg: dict, save_dir: str = None) -> str:
+    """요약 결과를 마크다운 파일로 저장. 반환: 저장된 절대 경로."""
+    base = Path(save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).expanduser()
+    base.mkdir(parents=True, exist_ok=True)
+
+    try:
+        domain = _urlparse(url).netloc.replace("www.", "")
+    except Exception:
+        domain = "unknown"
+    safe_domain = re.sub(r"[^a-zA-Z0-9._-]", "_", domain)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{ts}_{safe_domain}.md"
+    filepath = base / filename
+
+    provider = cfg.get("provider", "?")
+    model = cfg.get("model", "?")
+    prov_label = PROVIDERS.get(provider, {}).get("label", provider)
+
+    body = (
+        f"# {title or url}\n\n"
+        f"> **Source:** [{url}]({url})  \n"
+        f"> **Saved:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+        f"> **Provider:** {prov_label} / `{model or 'default'}`\n\n"
+        f"---\n\n"
+        f"{result}\n"
+    )
+    filepath.write_text(body, encoding="utf-8")
+    return str(filepath)
 
 
 def auto_detect_oauth_provider() -> str:
