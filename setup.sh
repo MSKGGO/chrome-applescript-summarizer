@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================
-#  Chrome AppleScript Summarizer — macOS 자동 셋업 (v0.2)
+#  Chrome AppleScript Summarizer — macOS 자동 셋업 (v0.1)
 # ==============================================================
 #  실행: bash setup.sh
 #

@@ -1,4 +1,4 @@
-# Chrome AppleScript Summarizer v0.2
+# Chrome AppleScript Summarizer v0.1
 
 > ⚠️ **macOS 전용 도구입니다.** Windows / Linux 미지원 — AppleScript는 macOS Apple Events API라 OS-level 등가물이 다른 OS에 없습니다. Windows에서는 작동하지 않으며, 별도 포팅 계획도 현재 없습니다.
 
@@ -218,20 +218,6 @@ chrome-applescript-summarizer/
 Windows 사용자께는:
 1. **paywall 약한 사이트** (Reuters, CNBC, MarketWatch) → 일반 Playwright로 충분
 2. **Bloomberg/WSJ/FT 빡센 paywall** → 본문 복붙이 가장 빠름
-
----
-
-## 변경 이력
-
-- **v0.2** (2026-04-26)
-  - README 명확화 (macOS 전용 강조, 자동/수동 구분)
-  - setup.sh 자동화 강화 (Node.js 자동 설치, OAuth CLI 선택 자동 설치)
-- **v0.1** (2026-04-26)
-  - 초기 공개 릴리스
-  - 6 provider OAuth/API 키 지원
-  - 큐 기반 다중 URL 처리
-  - Cloudflare 챌린지 자동 감지
-  - 텔레그램 봇 통합 코드
 
 ---
 
