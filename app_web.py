@@ -144,134 +144,212 @@ HTML = r"""<!DOCTYPE html>
   <meta charset="utf-8">
   <title>Chrome AppleScript Summarizer</title>
   <style>
+    /* ── 색상 토큰 (라이트 / 다크) ── */
+    :root {
+      --bg: #f8f9fa;
+      --text: #1a1a1a;
+      --text-muted: #666;
+      --text-dim: #888;
+      --card-bg: #ffffff;
+      --card-bg-alt: #fafafa;
+      --border: #e0e0e0;
+      --border-soft: #eeeeee;
+      --code-bg: #f0f0f0;
+      --input-bg: #ffffff;
+      --input-border: #cccccc;
+      --primary: #4a90e2;
+      --primary-hover: #357abd;
+      --secondary-bg: #e0e0e0;
+      --secondary-bg-hover: #d0d0d0;
+      --secondary-text: #333333;
+      --warn-bg: #fff3cd;
+      --warn-text: #856404;
+      --warn-border: #ffc107;
+      --pending: #999999;
+      --running-bg: #e3f2fd;
+      --running-fg: #1565c0;
+      --done-fg: #2e7d32;
+      --failed-bg: #ffebee;
+      --failed-fg: #c62828;
+      --shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    [data-theme="dark"] {
+      --bg: #161718;
+      --text: #e6e6e6;
+      --text-muted: #a0a0a0;
+      --text-dim: #777777;
+      --card-bg: #232425;
+      --card-bg-alt: #1c1d1e;
+      --border: #393a3c;
+      --border-soft: #303133;
+      --code-bg: #2c2d2f;
+      --input-bg: #1c1d1e;
+      --input-border: #444547;
+      --primary: #5aa0f2;
+      --primary-hover: #7ab4f5;
+      --secondary-bg: #34353a;
+      --secondary-bg-hover: #41434a;
+      --secondary-text: #e6e6e6;
+      --warn-bg: #3a2f00;
+      --warn-text: #ffd966;
+      --warn-border: #ffc107;
+      --pending: #666666;
+      --running-bg: #14304a;
+      --running-fg: #7eb8f0;
+      --done-fg: #6ec077;
+      --failed-bg: #401a1a;
+      --failed-fg: #ef5350;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
+
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
       max-width: 960px; margin: 25px auto; padding: 20px;
-      background: #f8f9fa; color: #1a1a1a;
+      background: var(--bg); color: var(--text);
+      transition: background 0.18s, color 0.18s;
     }
-    h1 { color: #1a1a1a; margin: 0 0 8px; font-size: 22px; }
-    .subtitle { color: #666; margin: 0 0 20px; font-size: 14px; }
+    .top-row {
+      display: flex; align-items: flex-start; gap: 10px;
+    }
+    .top-row .grow { flex: 1; }
+    .theme-toggle {
+      background: var(--card-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 10px; cursor: pointer; font-size: 13px;
+    }
+    .theme-toggle:hover { background: var(--secondary-bg); }
+    h1 { color: var(--text); margin: 0 0 8px; font-size: 22px; }
+    .subtitle { color: var(--text-muted); margin: 0 0 20px; font-size: 14px; }
     .info-bar {
       display: flex; align-items: center; gap: 10px;
-      font-size: 12px; color: #555; padding: 8px 12px; background: #fff;
-      border-radius: 6px; border: 1px solid #eee; margin-bottom: 15px;
+      font-size: 12px; color: var(--text-muted); padding: 8px 12px;
+      background: var(--card-bg);
+      border-radius: 6px; border: 1px solid var(--border-soft); margin-bottom: 15px;
+      box-shadow: var(--shadow);
     }
-    .info-bar code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
+    .info-bar code { background: var(--code-bg); padding: 2px 6px; border-radius: 3px; color: var(--text); }
     .info-bar .grow { flex: 1; }
     .settings-toggle {
-      background: #f0f0f0; color: #333; border: 0; padding: 4px 10px;
-      border-radius: 4px; cursor: pointer; font-size: 12px;
+      background: var(--secondary-bg); color: var(--secondary-text); border: 0;
+      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
     }
-    .settings-toggle:hover { background: #e0e0e0; }
+    .settings-toggle:hover { background: var(--secondary-bg-hover); }
     .settings-panel {
-      display: none; background: #fff; border: 1px solid #e0e0e0;
+      display: none; background: var(--card-bg); border: 1px solid var(--border);
       border-radius: 8px; padding: 16px; margin-bottom: 15px;
+      box-shadow: var(--shadow);
     }
     .settings-panel.open { display: block; }
-    .settings-panel h3 { margin: 0 0 12px; font-size: 14px; }
+    .settings-panel h3 { margin: 0 0 12px; font-size: 14px; color: var(--text); }
     .settings-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
-    .settings-row label { width: 90px; font-size: 13px; color: #555; }
+    .settings-row label { width: 90px; font-size: 13px; color: var(--text-muted); }
     .settings-row select, .settings-row input {
-      flex: 1; padding: 8px; font-size: 13px; border: 1px solid #ccc;
+      flex: 1; padding: 8px; font-size: 13px;
+      border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text);
       border-radius: 4px; font-family: inherit;
     }
     .settings-actions { display: flex; gap: 8px; margin-top: 12px; }
-    .cli-status-list { font-size: 12px; color: #666; margin: 8px 0; }
+    .cli-status-list { font-size: 12px; color: var(--text-muted); margin: 8px 0; }
     .cli-status-list .cli-row {
       display: flex; align-items: center; gap: 8px; padding: 4px 0;
     }
     .cli-status-list .cli-row .label { flex: 1; }
     .cli-status-list button {
       font-size: 11px; padding: 3px 10px; border-radius: 4px;
-      background: #4a90e2; color: white; border: 0; cursor: pointer;
+      background: var(--primary); color: white; border: 0; cursor: pointer;
     }
     .cli-status-list button.secondary {
-      background: #f0f0f0; color: #333;
+      background: var(--secondary-bg); color: var(--secondary-text);
     }
-    .cli-status-list button:disabled { background: #aaa; cursor: not-allowed; }
+    .cli-status-list button:disabled { background: var(--pending); cursor: not-allowed; }
     .node-warning {
-      padding: 8px 12px; background: #fff3cd; color: #856404;
-      border-left: 3px solid #ffc107; margin: 8px 0; font-size: 12px;
+      padding: 8px 12px; background: var(--warn-bg); color: var(--warn-text);
+      border-left: 3px solid var(--warn-border); margin: 8px 0; font-size: 12px;
       border-radius: 4px;
     }
     textarea {
-      width: 100%; padding: 12px; font-size: 14px; border: 1px solid #ccc;
+      width: 100%; padding: 12px; font-size: 14px;
+      border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text);
       border-radius: 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
       resize: vertical; min-height: 110px;
     }
-    textarea:focus { outline: none; border-color: #4a90e2; }
+    textarea:focus { outline: none; border-color: var(--primary); }
     .form-row {
       display: flex; gap: 8px; align-items: center; margin-top: 10px;
     }
     button {
       padding: 11px 22px; font-size: 14px; cursor: pointer; border: 0;
-      border-radius: 6px; background: #4a90e2; color: white; font-weight: 600;
+      border-radius: 6px; background: var(--primary); color: white; font-weight: 600;
     }
-    button:hover:not(:disabled) { background: #357abd; }
-    button:disabled { background: #aaa; cursor: not-allowed; }
-    button.secondary { background: #e0e0e0; color: #333; }
-    button.secondary:hover { background: #d0d0d0; }
-    .help {
-      font-size: 12px; color: #888; margin-left: auto;
-    }
-    .stats { margin: 15px 0; font-size: 13px; color: #555; }
+    button:hover:not(:disabled) { background: var(--primary-hover); }
+    button:disabled { background: var(--pending); cursor: not-allowed; }
+    button.secondary { background: var(--secondary-bg); color: var(--secondary-text); }
+    button.secondary:hover { background: var(--secondary-bg-hover); }
+    .help { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+    .stats { margin: 15px 0; font-size: 13px; color: var(--text-muted); }
     .stats span { margin-right: 12px; }
-    .stats .pending { color: #999; }
-    .stats .running { color: #1565c0; font-weight: 600; }
-    .stats .done { color: #2e7d32; }
-    .stats .failed { color: #c62828; }
+    .stats .pending { color: var(--pending); }
+    .stats .running { color: var(--running-fg); font-weight: 600; }
+    .stats .done { color: var(--done-fg); }
+    .stats .failed { color: var(--failed-fg); }
 
-    .jobs {
-      display: flex; flex-direction: column; gap: 10px;
-    }
+    .jobs { display: flex; flex-direction: column; gap: 10px; }
     .job {
-      background: white; border-radius: 8px; padding: 14px 16px;
-      border-left: 4px solid #ccc;
+      background: var(--card-bg); border-radius: 8px; padding: 14px 16px;
+      border-left: 4px solid var(--border); box-shadow: var(--shadow);
     }
-    .job.pending { border-left-color: #999; }
-    .job.running { border-left-color: #1565c0; background: #e3f2fd; }
-    .job.done { border-left-color: #2e7d32; }
-    .job.failed { border-left-color: #c62828; background: #ffebee; }
+    .job.pending { border-left-color: var(--pending); }
+    .job.running { border-left-color: var(--running-fg); background: var(--running-bg); }
+    .job.done { border-left-color: var(--done-fg); }
+    .job.failed { border-left-color: var(--failed-fg); background: var(--failed-bg); }
 
     .job-head {
       display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
     }
     .job-status {
       font-size: 11px; font-weight: 700; text-transform: uppercase;
-      padding: 2px 8px; border-radius: 10px; background: #f0f0f0;
+      padding: 2px 8px; border-radius: 10px;
+      background: var(--code-bg); color: var(--text-muted);
     }
-    .job-status.running { background: #1565c0; color: white; }
-    .job-status.done { background: #2e7d32; color: white; }
-    .job-status.failed { background: #c62828; color: white; }
+    .job-status.running { background: var(--running-fg); color: white; }
+    .job-status.done { background: var(--done-fg); color: white; }
+    .job-status.failed { background: var(--failed-fg); color: white; }
     .job-url {
-      font-size: 12px; color: #555; word-break: break-all;
+      font-size: 12px; color: var(--text-muted); word-break: break-all;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       flex: 1;
     }
-    .job-time { font-size: 11px; color: #999; }
+    .job-time { font-size: 11px; color: var(--text-dim); }
     .job-result {
       white-space: pre-wrap; font-size: 14px; line-height: 1.7;
-      margin-top: 10px; padding: 10px 12px; background: #fafafa;
+      margin-top: 10px; padding: 10px 12px;
+      background: var(--card-bg-alt); color: var(--text);
       border-radius: 6px;
     }
     .job-error {
-      font-size: 13px; color: #c62828; margin-top: 8px;
-      padding: 8px 12px; background: #fff; border-radius: 6px;
+      font-size: 13px; color: var(--failed-fg); margin-top: 8px;
+      padding: 8px 12px; background: var(--card-bg); border-radius: 6px;
     }
     .copy-btn {
-      font-size: 11px; padding: 4px 8px; background: #f0f0f0; color: #333;
+      font-size: 11px; padding: 4px 8px;
+      background: var(--secondary-bg); color: var(--secondary-text);
       border-radius: 4px; cursor: pointer; border: 0; margin-top: 6px;
     }
-    .copy-btn:hover { background: #e0e0e0; }
+    .copy-btn:hover { background: var(--secondary-bg-hover); }
     .empty {
-      text-align: center; padding: 40px; color: #aaa; font-size: 14px;
+      text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px;
     }
   </style>
 </head>
 <body>
-  <h1>📰 Chrome AppleScript Summarizer</h1>
-  <p class="subtitle">URL을 한 줄에 하나씩(또는 공백으로 구분해) 입력 → 큐에 쌓아 순차 처리</p>
+  <div class="top-row">
+    <div class="grow">
+      <h1>📰 Chrome AppleScript Summarizer</h1>
+      <p class="subtitle">URL을 한 줄에 하나씩(또는 공백으로 구분해) 입력 → 큐에 쌓아 순차 처리</p>
+    </div>
+    <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn" title="다크모드 토글">🌙</button>
+  </div>
 
   <div class="info-bar">
     <span class="grow" id="provider-info">로딩 중...</span>
@@ -312,6 +390,30 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
   <div class="jobs" id="jobs"></div>
 
   <script>
+    // ── 다크모드 ──
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      const btn = document.getElementById('theme-toggle-btn');
+      if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    }
+    function toggleTheme() {
+      const cur = document.documentElement.getAttribute('data-theme') || 'light';
+      const next = cur === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', next);
+      applyTheme(next);
+    }
+    // 페이지 로드 시 적용 — 저장된 값 > OS 선호 > light
+    (function initTheme() {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark' || saved === 'light') {
+        applyTheme(saved);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        applyTheme('dark');
+      } else {
+        applyTheme('light');
+      }
+    })();
+
     const ta = document.getElementById('urls');
     const btn = document.getElementById('enqueue-btn');
     const statsEl = document.getElementById('stats');
