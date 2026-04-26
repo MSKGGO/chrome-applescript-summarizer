@@ -863,12 +863,21 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
     }
 
     // ── 상단 Quick Bar (자동 저장) ──
+    function _todayLocalISO() {
+      // 로컬 타임존 기준 YYYY-MM-DD (백엔드 datetime.now()와 일치)
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
     function updateQuickBar() {
       const checkbox = document.getElementById('quick-auto-save');
       checkbox.checked = !!CURRENT_CFG.auto_save;
       const dir = CURRENT_CFG.save_dir || '~/Documents/Summaries';
       const mode = CURRENT_CFG.save_mode || 'daily_log';
-      const today = new Date().toISOString().slice(0, 10);
+      const today = _todayLocalISO();
       const target = mode === 'daily_log'
         ? `${dir}/${today}.md`
         : `${dir}/{시각}_{도메인}.md`;
@@ -904,7 +913,7 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
 
     async function openTodayLog() {
       const dir = CURRENT_CFG.save_dir || '~/Documents/Summaries';
-      const today = new Date().toISOString().slice(0, 10);
+      const today = _todayLocalISO();
       const res = await fetch('/open-file', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({path: `${dir}/${today}.md`}),
@@ -1501,6 +1510,8 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
     setInterval(loadSafetyStats, 15000);
     // 외부 에디터 수정 감지 (5초, 패널 열려있고 타이핑 중 아닐 때만)
     setInterval(checkExternalEdit, 5000);
+    // 자정 넘김 대비 — 60초마다 quick bar 텍스트 갱신 (오늘 날짜)
+    setInterval(updateQuickBar, 60000);
     // 페이지 떠나기 전 미저장 변경 있으면 강제 flush
     window.addEventListener('beforeunload', (e) => {
       if (_LAST_SAVED_TEXT !== document.getElementById('prompt-textarea').value) {
