@@ -96,8 +96,16 @@ def _worker_loop():
             if not job:
                 _job_queue.task_done()
                 continue
+            # pending 상태에서 이미 cancel 요청됨 → 처리 안 함
+            if job.get("cancel_requested"):
+                job["status"] = "cancelled"
+                job["error"] = "사용자가 취소함 (대기 중)"
+                job["finished_at"] = time.time()
+                _job_queue.task_done()
+                continue
             job["status"] = "running"
             job["started_at"] = time.time()
+            proc_holder = job.setdefault("proc_holder", {"proc": None})
         try:
             cfg = load_config()
             # 안전장치: 같은 도메인 연속 호출 시 최소 간격 보장 (사람 페이스 흉내)
@@ -108,19 +116,30 @@ def _worker_loop():
             if min_interval > 0:
                 last_ts = get_domain_recent_ts(job["url"])
                 wait_for = (last_ts + min_interval) - time.time()
-                if 0 < wait_for <= 30:  # 30초 이상은 무시 (다른 시간대로 간주)
-                    time.sleep(wait_for)
+                # 대기 도중에도 cancel 체크 (1초 단위)
+                end_wait = time.time() + min(wait_for, 30)
+                while time.time() < end_wait:
+                    if job.get("cancel_requested"):
+                        break
+                    time.sleep(min(0.5, end_wait - time.time()))
+            # cancel 체크 — 대기 중 취소됐으면 여기서 끊음
+            if job.get("cancel_requested"):
+                raise RuntimeError("사용자가 취소함 (대기 중)")
             # 사용량 기록 (실행 직전 — 실패해도 시도는 카운트)
             try:
                 record_usage(job["url"])
             except Exception:
                 pass
-            result = summarize_url(job["url"], cfg)
+            result = summarize_url(job["url"], cfg, proc_holder=proc_holder)
             with _jobs_lock:
-                job["result"] = result
-                job["status"] = "done"
-            # 자동 저장 옵션이 켜져 있으면 파일로
-            if cfg.get("auto_save"):
+                if job.get("cancel_requested"):
+                    job["status"] = "cancelled"
+                    job["error"] = "사용자가 취소함 (완료 직전)"
+                else:
+                    job["result"] = result
+                    job["status"] = "done"
+            # 자동 저장 (cancel 안 됐고 결과 있을 때만)
+            if cfg.get("auto_save") and job.get("status") == "done":
                 try:
                     title = _extract_title(result)
                     saved_path = save_summary_to_file(
@@ -134,11 +153,18 @@ def _worker_loop():
                         job["save_error"] = str(e)
         except Exception as e:
             with _jobs_lock:
-                job["error"] = str(e)
-                job["status"] = "failed"
+                if job.get("cancel_requested"):
+                    job["status"] = "cancelled"
+                    job["error"] = "사용자가 취소함 (실행 중)"
+                else:
+                    job["error"] = str(e)
+                    job["status"] = "failed"
         finally:
             with _jobs_lock:
                 job["finished_at"] = time.time()
+                # proc_holder 비우기 (gc 도움)
+                if "proc_holder" in job:
+                    job["proc_holder"]["proc"] = None
             _job_queue.task_done()
 
 
@@ -160,26 +186,59 @@ def _enqueue_urls(urls: list) -> list:
                 "result": None, "error": None,
                 "created_at": time.time(),
                 "started_at": None, "finished_at": None,
+                "cancel_requested": False, "cancelled_at": None,
+                "proc_holder": {"proc": None},
             }
             _job_queue.put(job_id)
             new_ids.append(job_id)
     return new_ids
 
 
+def _job_public(job: dict) -> dict:
+    """JSON 직렬화 가능한 형태만 골라서 반환 (proc_holder는 Popen 객체라 직렬화 불가)."""
+    out = {k: v for k, v in job.items() if k != "proc_holder"}
+    return out
+
+
 def _list_jobs(limit: int = 50) -> list:
     with _jobs_lock:
-        all_jobs = list(_jobs.values())
+        all_jobs = [_job_public(j) for j in _jobs.values()]
     all_jobs.sort(key=lambda j: -j["created_at"])
     return all_jobs[:limit]
 
 
 def _clear_finished():
-    """완료/실패한 작업만 정리. 진행/대기 중은 유지."""
+    """완료/실패/취소된 작업만 정리. 진행/대기 중은 유지."""
     with _jobs_lock:
-        to_remove = [jid for jid, j in _jobs.items() if j["status"] in ("done", "failed")]
+        to_remove = [jid for jid, j in _jobs.items() if j["status"] in ("done", "failed", "cancelled")]
         for jid in to_remove:
             del _jobs[jid]
     return len(to_remove)
+
+
+def _cancel_job(job_id: str) -> dict:
+    """job cancel 요청. pending이면 그냥 플래그 세팅, running이면 proc.terminate()."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return {"error": "job not found"}
+        if job["status"] in ("done", "failed", "cancelled"):
+            return {"error": f"이미 종료됨: {job['status']}"}
+        job["cancel_requested"] = True
+        job["cancelled_at"] = time.time()
+        proc = job.get("proc_holder", {}).get("proc")
+        prev_status = job["status"]
+    # 락 밖에서 proc 정리 (terminate가 시간 걸릴 수 있어서)
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except Exception:
+            pass
+    return {"ok": True, "prev_status": prev_status, "killed_proc": proc is not None}
 
 
 # ════════════════════════════════════════════════════════════
@@ -341,6 +400,7 @@ HTML = r"""<!DOCTYPE html>
     .stats .running { color: var(--running-fg); font-weight: 600; }
     .stats .done { color: var(--done-fg); }
     .stats .failed { color: var(--failed-fg); }
+    .stats .cancelled { color: var(--text-dim); }
 
     .jobs { display: flex; flex-direction: column; gap: 10px; }
     .job {
@@ -351,6 +411,7 @@ HTML = r"""<!DOCTYPE html>
     .job.running { border-left-color: var(--running-fg); background: var(--running-bg); }
     .job.done { border-left-color: var(--done-fg); }
     .job.failed { border-left-color: var(--failed-fg); background: var(--failed-bg); }
+    .job.cancelled { border-left-color: var(--text-dim); opacity: 0.7; }
 
     .job-head {
       display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
@@ -363,6 +424,15 @@ HTML = r"""<!DOCTYPE html>
     .job-status.running { background: var(--running-fg); color: white; }
     .job-status.done { background: var(--done-fg); color: white; }
     .job-status.failed { background: var(--failed-fg); color: white; }
+    .job-status.cancelled { background: var(--text-dim); color: white; }
+    .cancel-btn {
+      background: transparent; color: var(--text-muted);
+      border: 1px solid var(--border); border-radius: 50%;
+      width: 22px; height: 22px; padding: 0;
+      font-size: 12px; line-height: 1; cursor: pointer;
+      font-weight: 700; flex-shrink: 0;
+    }
+    .cancel-btn:hover { background: var(--failed-fg); color: white; border-color: var(--failed-fg); }
     .job-url {
       font-size: 12px; color: var(--text-muted); word-break: break-all;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -1322,6 +1392,23 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       refresh();
     }
 
+    async function cancelJob(jobId) {
+      if (!confirm('이 작업을 취소할까요?\n실행 중이면 진행 중인 subprocess가 즉시 종료됩니다.')) return;
+      try {
+        const r = await fetch('/cancel-job', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({job_id: jobId}),
+        });
+        const data = await r.json();
+        if (data.error) {
+          alert('취소 실패: ' + data.error);
+        }
+        refresh();
+      } catch (e) {
+        alert('취소 호출 실패: ' + e);
+      }
+    }
+
     function fmtTime(ts) {
       if (!ts) return '';
       const d = new Date(ts * 1000);
@@ -1336,13 +1423,14 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
     }
 
     function renderJobs(jobs) {
-      const counts = {pending: 0, running: 0, done: 0, failed: 0};
-      jobs.forEach(j => counts[j.status]++);
+      const counts = {pending: 0, running: 0, done: 0, failed: 0, cancelled: 0};
+      jobs.forEach(j => { if (counts[j.status] !== undefined) counts[j.status]++; });
       statsEl.innerHTML = `
         <span class="pending">대기 ${counts.pending}</span>
         <span class="running">처리 중 ${counts.running}</span>
         <span class="done">완료 ${counts.done}</span>
         <span class="failed">실패 ${counts.failed}</span>
+        <span class="cancelled">취소 ${counts.cancelled}</span>
       `;
 
       if (jobs.length === 0) {
@@ -1361,12 +1449,17 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
             <button class="copy-btn" onclick="copyJob('${j.id}')">📋 복사</button>
             ${!j.saved_path ? `<button class="copy-btn save-btn" onclick="saveJob('${j.id}')">💾 파일 저장</button>` : ''}
           </div>` : '';
+        const cancellable = (j.status === 'pending' || j.status === 'running');
+        const cancelBtn = cancellable
+          ? `<button class="cancel-btn" onclick="cancelJob('${j.id}')" title="이 작업 취소">✕</button>`
+          : '';
         return `
           <div class="job ${j.status}" id="job-${j.id}">
             <div class="job-head">
               <span class="job-status ${j.status}">${j.status}</span>
               <span class="job-url">${escapeHtml(j.url)}</span>
               <span class="job-time">${created}${elapsed ? ' · ' + elapsed : ''}</span>
+              ${cancelBtn}
             </div>
             ${j.result ? `<div class="job-result">${escapeHtml(j.result)}</div>` : ''}
             ${savedBadge}
@@ -1531,6 +1624,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/clear-finished":
             n = _clear_finished()
             self._send_json({"cleared": n})
+        elif path == "/cancel-job":
+            try:
+                body = self._read_json()
+                jid = body.get("job_id", "")
+                self._send_json(_cancel_job(jid))
+            except Exception as e:
+                self._send_json({"error": str(e)})
         elif path == "/save-job":
             try:
                 body = self._read_json()

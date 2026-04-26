@@ -232,13 +232,57 @@ def check_gemini_cli():
 
 
 # ════════════════════════════════════════════════════════════
+#  Cancellable subprocess 헬퍼
+#  ────────────────────────────────────────────────────────────
+#  proc_holder: dict | None
+#    {"proc": subprocess.Popen} 형태로 호출자가 핸들 회수 → 외부 cancel 가능
+#  ════════════════════════════════════════════════════════════
+
+class _ProcResult:
+    __slots__ = ("returncode", "stdout", "stderr")
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_capture(args, timeout: int, env=None, proc_holder=None) -> _ProcResult:
+    """subprocess.run의 cancellable 버전.
+    proc_holder가 주어지면 Popen 객체를 holder["proc"]에 등록 — 외부에서 terminate 가능."""
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env or SUBPROC_ENV,
+    )
+    if proc_holder is not None:
+        proc_holder["proc"] = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+        except Exception:
+            stdout, stderr = "", ""
+        raise
+    finally:
+        # 정상 종료 후엔 holder의 proc은 의미 없으므로 None으로 (cancel 시도 시 no-op 유도)
+        if proc_holder is not None and proc_holder.get("proc") is proc:
+            proc_holder["proc"] = None
+    return _ProcResult(proc.returncode, stdout, stderr)
+
+
+# ════════════════════════════════════════════════════════════
 #  본문 추출
 # ════════════════════════════════════════════════════════════
 
-def fetch_body(url: str) -> dict:
-    proc = subprocess.run(
+def fetch_body(url: str, proc_holder=None) -> dict:
+    proc = _run_capture(
         ["python3", str(FETCH_SCRIPT), url],
-        capture_output=True, text=True, timeout=150, env=SUBPROC_ENV,
+        timeout=150, env=SUBPROC_ENV, proc_holder=proc_holder,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"본문 추출 실패: {(proc.stderr or proc.stdout)[:300]}")
@@ -256,9 +300,9 @@ def fetch_body(url: str) -> dict:
 SYSTEM_HINT = "당신은 외국 뉴스 본문을 한국어로 요약하는 도구입니다. 사용자가 제시한 형식만 정확히 따르세요. 메모리/스킬/도구 호출 없이 즉시 답하세요."
 
 
-def call_claude_cli(prompt: str, model: str = "haiku") -> str:
+def call_claude_cli(prompt: str, model: str = "haiku", proc_holder=None) -> str:
     bin_path = shutil.which("claude") or "/opt/homebrew/bin/claude"
-    proc = subprocess.run(
+    proc = _run_capture(
         [
             bin_path, "-p",
             "--model", model or "haiku",
@@ -266,7 +310,7 @@ def call_claude_cli(prompt: str, model: str = "haiku") -> str:
             "--append-system-prompt", SYSTEM_HINT,
             prompt,
         ],
-        capture_output=True, text=True, timeout=120, env=SUBPROC_ENV,
+        timeout=120, env=SUBPROC_ENV, proc_holder=proc_holder,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude CLI 실패: {(proc.stderr or proc.stdout)[:500]}")
@@ -276,13 +320,13 @@ def call_claude_cli(prompt: str, model: str = "haiku") -> str:
     return out
 
 
-def call_codex_cli(prompt: str, model: str = "") -> str:
+def call_codex_cli(prompt: str, model: str = "", proc_holder=None) -> str:
     """OpenAI Codex CLI: codex exec "prompt" """
     bin_path = shutil.which("codex") or "/opt/homebrew/bin/codex"
     full_prompt = f"{SYSTEM_HINT}\n\n{prompt}"
-    proc = subprocess.run(
+    proc = _run_capture(
         [bin_path, "exec", full_prompt],
-        capture_output=True, text=True, timeout=180, env=SUBPROC_ENV,
+        timeout=180, env=SUBPROC_ENV, proc_holder=proc_holder,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"codex CLI 실패: {(proc.stderr or proc.stdout)[:500]}")
@@ -292,15 +336,15 @@ def call_codex_cli(prompt: str, model: str = "") -> str:
     return out
 
 
-def call_gemini_cli(prompt: str, model: str = "gemini-2.5-flash") -> str:
+def call_gemini_cli(prompt: str, model: str = "gemini-2.5-flash", proc_holder=None) -> str:
     """Google Gemini CLI: gemini -p "prompt" -m <model>"""
     bin_path = shutil.which("gemini") or "/opt/homebrew/bin/gemini"
     full_prompt = f"{SYSTEM_HINT}\n\n{prompt}"
     args = [bin_path, "-p", full_prompt]
     if model:
         args = [bin_path, "-m", model, "-p", full_prompt]
-    proc = subprocess.run(
-        args, capture_output=True, text=True, timeout=180, env=SUBPROC_ENV,
+    proc = _run_capture(
+        args, timeout=180, env=SUBPROC_ENV, proc_holder=proc_holder,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"gemini CLI 실패: {(proc.stderr or proc.stdout)[:500]}")
@@ -373,8 +417,10 @@ def call_gemini(api_key: str, prompt: str, model: str) -> str:
 #  Dispatch
 # ════════════════════════════════════════════════════════════
 
-def summarize_url(url: str, cfg: dict) -> str:
-    data = fetch_body(url)
+def summarize_url(url: str, cfg: dict, proc_holder=None) -> str:
+    """proc_holder: dict | None. 주어지면 하위 subprocess 핸들이 holder["proc"]에
+    실시간으로 등록됨 — 외부에서 proc.terminate()로 cancel 가능."""
+    data = fetch_body(url, proc_holder=proc_holder)
     body = (data.get("body") or "").strip()
     title = (data.get("title") or "").strip()
     final_url = (data.get("url") or url).strip()
@@ -388,11 +434,11 @@ def summarize_url(url: str, cfg: dict) -> str:
     model = cfg.get("model", PROVIDERS.get(provider, {}).get("default_model", ""))
 
     if provider == "claude_cli":
-        return call_claude_cli(prompt, model)
+        return call_claude_cli(prompt, model, proc_holder=proc_holder)
     elif provider == "codex_cli":
-        return call_codex_cli(prompt, model)
+        return call_codex_cli(prompt, model, proc_holder=proc_holder)
     elif provider == "gemini_cli":
-        return call_gemini_cli(prompt, model)
+        return call_gemini_cli(prompt, model, proc_holder=proc_holder)
     elif provider == "anthropic":
         return call_anthropic(cfg.get("api_key", ""), prompt, model)
     elif provider == "openai":
