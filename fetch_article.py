@@ -52,9 +52,11 @@ end tell
 subprocess.run(["osascript", "-e", OPEN_SCRIPT], check=True)
 
 # Step 2: 본문이 충분히 채워질 때까지 polling
-GET_SCRIPT = '''
+# 셀렉터 다중화 — 글로벌 표준 + 한국 그누보드/제로보드/네이버/티스토리 등 흔한 본문 컨테이너
+# 모든 후보 중 innerText 길이가 가장 긴 것 선택 → 사이드바의 짧은 <article> 잡혀도 진짜 본문이 더 길어서 이김
+GET_SCRIPT = r'''
 tell application "Google Chrome"
-    return execute (last tab of window 1) javascript "JSON.stringify({t:document.title,u:location.href,b:(document.querySelector('article')||document.querySelector('main')||document.body).innerText})"
+    return execute (last tab of window 1) javascript "(function(){var sels=['article','main','[itemprop=\"articleBody\"]','[role=\"main\"]','#articleBody','#article-view-content-div','#newsContent','#news_body_area','.article_body','.article-body','.article_view','.view_content','.entry-content','.post-content'];var best='';for(var i=0;i<sels.length;i++){try{var el=document.querySelector(sels[i]);if(el){var t=el.innerText||'';if(t.length>best.length)best=t;}}catch(e){}}if(best.length<200)best=document.body.innerText||'';return JSON.stringify({t:document.title,u:location.href,b:best});})()"
 end tell
 '''
 
@@ -76,13 +78,20 @@ tell application "Google Chrome"
 end tell
 '''
 
-# Cloudflare/봇체크 감지 키워드 (소문자 비교)
+# Cloudflare/봇체크 + 한국 사이트 로그인 요구 감지 키워드 (소문자 비교)
 CHALLENGE_HINTS = [
+    # 영어 (Cloudflare / 봇 차단)
     "just a moment", "checking your browser", "verify you are human",
     "are you a robot", "ddos protection by", "cloudflare",
     "challenge-platform", "needs to review the security",
     "performance & security by", "press & hold",
     "please confirm you are not a bot",
+    # 한국어 (로그인 요구 / 본인 인증) — 사용자가 평소 계정으로 직접 통과할 시간 확보
+    "본인 인증", "본인인증",
+    "로그인이 필요", "로그인 후 이용", "로그인 해주세요",
+    "회원 가입", "회원가입 후",
+    "구독자만", "유료 회원",
+    "인증이 필요합니다",
 ]
 
 
@@ -130,8 +139,10 @@ while time.time() < deadline:
     body = result.get("b", "") or ""
     title = result.get("t", "") or ""
 
-    # 본문이 충분하고 챌린지/페이월 아니면 성공
-    if len(body) > 1500 and "Subscribe to continue" not in body[:500] \
+    # 본문이 충분(800자 이상)하고 챌린지/페이월 아니면 polling 종료
+    # 한국 단신(800-1500자)도 통과 가능. 최종 검증은 아래 1000자 + 페이월 키워드로 한 번 더
+    if len(body) > 800 and "Subscribe to continue" not in body[:500] \
+            and "Sign in to continue" not in body[:500] \
             and not is_challenge_page(body, title):
         break
 
@@ -154,11 +165,15 @@ except Exception:
     pass
 
 if result and len(result.get("b", "")) > 1000:
-    print(json.dumps(
-        {"title": result["t"], "url": result["u"], "body": result["b"]},
-        ensure_ascii=False,
-    ))
-    sys.exit(0)
+    final_body = result.get("b", "") or ""
+    # 페이월 첫 단락 방어 — 1000자 넘었어도 명백한 페이월 키워드 있으면 거부
+    if "Subscribe to continue" not in final_body[:500] \
+            and "Sign in to continue" not in final_body[:500]:
+        print(json.dumps(
+            {"title": result["t"], "url": result["u"], "body": final_body},
+            ensure_ascii=False,
+        ))
+        sys.exit(0)
 
 err_type = "timeout_or_paywalled"
 if challenge_alerted:
