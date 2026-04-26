@@ -1,4 +1,4 @@
-# Chrome AppleScript Summarizer
+# Chrome AppleScript Summarizer v0.1
 
 URL을 던지면 **평소 쓰던 macOS Chrome**으로 본문을 가져와 **한국어 요약 포맷**으로 돌려주는 자동화 패키지.
 
