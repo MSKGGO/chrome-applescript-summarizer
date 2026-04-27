@@ -807,7 +807,7 @@ https://www.wsj.com/articles/...
 https://www.cnbc.com/2026/04/26/..."></textarea>
   <div class="form-row">
     <button id="enqueue-btn" onclick="enqueueAll()">큐에 추가</button>
-    <button class="secondary" onclick="clearFinished()">완료/실패 정리</button>
+    <button class="secondary" onclick="clearFinished()">완료/실패/취소 정리</button>
     <span class="help">⌘+⏎ 로도 추가 가능</span>
   </div>
 
