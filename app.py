@@ -52,7 +52,52 @@ SAFETY_DEFAULTS = {
     "min_interval_same_domain_sec": 8,     # 같은 도메인 연속 호출 간 최소 권장 간격
 }
 
+def _augment_path():
+    """node / npm / claude / codex / gemini CLI를 PATH에 자동 보강.
+    Summarizer.app 더블클릭으로 GUI를 띄우면 셸 rc 파일을 안 거치므로
+    nvm / fnm / volta로 설치한 node를 shutil.which()가 못 찾는 문제 해결.
+    호출 시 os.environ['PATH']를 직접 수정 → shutil.which()가 즉시 효과."""
+    extras = [
+        "/opt/homebrew/bin",                           # Apple Silicon Homebrew
+        "/usr/local/bin",                              # Intel Homebrew / 일반 system
+        str(Path.home() / ".volta/bin"),               # Volta (Node version manager)
+        str(Path.home() / ".fnm/aliases/default/bin"), # fnm (Fast Node Manager)
+        str(Path.home() / ".local/bin"),               # pip --user 설치
+    ]
+    # nvm — 버전 디렉토리들 중 가장 최신 골라서 추가
+    nvm_versions_dir = Path.home() / ".nvm/versions/node"
+    if nvm_versions_dir.is_dir():
+        try:
+            versions = sorted(nvm_versions_dir.iterdir(), reverse=True)
+            for v in versions:
+                if (v / "bin/node").exists():
+                    extras.append(str(v / "bin"))
+                    break
+        except Exception:
+            pass
+    # asdf — nodejs plugin (가장 최신 버전)
+    asdf_node_dir = Path.home() / ".asdf/installs/nodejs"
+    if asdf_node_dir.is_dir():
+        try:
+            versions = sorted(asdf_node_dir.iterdir(), reverse=True)
+            for v in versions:
+                if (v / "bin/node").exists():
+                    extras.append(str(v / "bin"))
+                    break
+        except Exception:
+            pass
+    cur = os.environ.get("PATH", "")
+    cur_parts = cur.split(":") if cur else []
+    new_paths = [p for p in extras if p not in cur_parts and Path(p).exists()]
+    if new_paths:
+        os.environ["PATH"] = ":".join(new_paths) + ":" + cur
+
+
+# 서버 시작 시 한 번 자동 보강 (import 시점)
+_augment_path()
+
 SUBPROC_ENV = os.environ.copy()
+# 추가 안전장치: subprocess 환경에도 명시적으로 포함 (nvm은 _augment_path에서 이미 처리됨)
 SUBPROC_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + SUBPROC_ENV.get("PATH", "")
 
 DEFAULT_PROMPT_TEMPLATE = """다음 영문(또는 외국어) 뉴스 기사 본문을 한국어로 요약해주세요.

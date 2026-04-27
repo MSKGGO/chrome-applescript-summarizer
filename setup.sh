@@ -147,13 +147,15 @@ cat > "$TMP_SCPT" <<APPLESCRIPT
 on run
     set workDir to "$DIR"
     set logPath to "/tmp/summarizer.log"
+    -- node/npm/CLI를 PATH에 미리 보강 (nvm/fnm/volta 모두 커버 — app.py도 자체 보강하지만 더블 안전)
+    set pathExport to "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.volta/bin:\$HOME/.fnm/aliases/default/bin:\$PATH; "
     set isRunning to false
     try
         do shell script "lsof -nP -iTCP:8765 -sTCP:LISTEN > /dev/null 2>&1"
         set isRunning to true
     end try
     if not isRunning then
-        do shell script "cd " & quoted form of workDir & " && /usr/bin/python3 app_web.py > " & logPath & " 2>&1 &"
+        do shell script pathExport & "cd " & quoted form of workDir & " && /usr/bin/python3 app_web.py > " & logPath & " 2>&1 &"
         delay 1.5
     end if
     do shell script "open http://localhost:8765/"
