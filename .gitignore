@@ -21,3 +21,6 @@ prompt.md.bak-*
 .vscode/
 .idea/
 *.swp
+
+# 빌드 산출물 (setup.sh가 매번 osacompile로 생성)
+Summarizer.app/

@@ -972,7 +972,7 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
           if (!s.installed && data.node_available) {
             actionBtn = `<button onclick="installCli('${s.name}')" id="install-btn-${s.name.replace(/\s/g, '-')}">📦 설치</button>`;
           } else if (s.installed && !s.logged_in) {
-            actionBtn = `<button class="secondary" onclick="showLoginHint('${s.name}')">🔑 로그인 안내</button>`;
+            actionBtn = `<button class="secondary" onclick="oauthLogin('${s.name}')">🔑 OAuth 로그인</button>`;
           }
           return `<div class="cli-row" style="color:${color}">
             <span>${icon}</span>
@@ -1226,13 +1226,40 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
       }
     }
 
-    function showLoginHint(name) {
-      const hints = {
-        'Claude Code': "터미널에서:\n  claude\n\n→ 첫 실행 시 브라우저 자동 열림 → Anthropic 계정 OAuth 로그인",
-        'Codex (ChatGPT)': "터미널에서:\n  codex\n\n→ 'Sign in with ChatGPT' 선택 → 브라우저 OAuth\n(ChatGPT Plus/Pro 구독자만 OAuth 가능)",
-        'Gemini CLI': "터미널에서:\n  gemini\n\n→ 'Login with Google' 선택 → 브라우저에서 Google 계정 권한 허용\n(무료 티어: Gemini 2.5 Pro 1M tokens/day)",
+    async function oauthLogin(name) {
+      // CLI 이름 → 실제 명령어 매핑
+      const cliMap = {
+        'Claude Code': 'claude',
+        'Codex (ChatGPT)': 'codex',
+        'Gemini CLI': 'gemini',
       };
-      alert('🔑 ' + name + ' 로그인 안내:\n\n' + (hints[name] || '터미널에서 해당 CLI 실행 후 화면 안내 따라 OAuth 로그인'));
+      const cli = cliMap[name];
+      if (!cli) {
+        alert('알 수 없는 CLI: ' + name);
+        return;
+      }
+      try {
+        const r = await fetch('/oauth-login', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({cli}),
+        });
+        const data = await r.json();
+        if (data.error) {
+          alert('Terminal 자동 실행 실패: ' + data.error +
+            '\n\n수동 방법: 터미널에서 직접 \'' + cli + '\' 입력 후 OAuth 진행');
+          return;
+        }
+        const guide = {
+          'Claude Code': '브라우저가 자동으로 열립니다 → Anthropic 계정 OAuth 로그인',
+          'Codex (ChatGPT)': '"Sign in with ChatGPT" 선택 → 브라우저 OAuth\n(ChatGPT Plus/Pro 구독자만)',
+          'Gemini CLI': '"Login with Google" 선택 → 브라우저에서 Google 계정 권한 허용\n(무료 티어: Gemini 2.5 Pro 1M tokens/day)',
+        };
+        alert('✓ Terminal 창이 열렸습니다 — \'' + cli + '\' 자동 실행됨\n\n' +
+              (guide[name] || '터미널 안내에 따라 OAuth 진행') +
+              '\n\nOAuth 완료 후 이 창에서 [⚙️ 설정 변경] 다시 열면 ✅로 표시됨.');
+      } catch (e) {
+        alert('호출 실패: ' + e);
+      }
     }
 
     async function saveSettings() {
@@ -1737,6 +1764,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 p.mkdir(parents=True, exist_ok=True)
                 subprocess.run(["open", str(p)])
                 self._send_json({"opened": str(p)})
+            except Exception as e:
+                self._send_json({"error": str(e)})
+        elif path == "/oauth-login":
+            # GUI 버튼 → Terminal.app을 자동으로 띄워서 CLI 명령 실행 (사용자가 OAuth만 진행)
+            try:
+                body = self._read_json()
+                cli_name = body.get("cli", "")  # claude / codex / gemini
+                if cli_name not in ("claude", "codex", "gemini"):
+                    self._send_json({"error": f"unknown CLI: {cli_name}"})
+                    return
+                # PATH 보장 (launchd 환경에서도 brew bin 인식)
+                cmd_with_path = f"export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; {cli_name}"
+                # AppleScript로 새 Terminal 창 + 명령 자동 실행
+                applescript = (
+                    'tell application "Terminal"\n'
+                    '    activate\n'
+                    f'    do script "{cmd_with_path}"\n'
+                    'end tell'
+                )
+                proc = subprocess.run(
+                    ["osascript", "-e", applescript],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if proc.returncode != 0:
+                    self._send_json({"error": (proc.stderr or proc.stdout)[:300]})
+                else:
+                    self._send_json({"ok": True, "cli": cli_name})
             except Exception as e:
                 self._send_json({"error": str(e)})
         elif path == "/install-cli":

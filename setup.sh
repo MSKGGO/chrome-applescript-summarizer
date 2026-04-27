@@ -130,17 +130,58 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${RED}    설정 후 다시 'bash setup.sh' 실행 권장${NC}"
 fi
 
-# ── 8. 완료 ──
+# ── 8. Summarizer.app 자동 빌드 (더블클릭 실행 — 터미널 안 뜸) ──
 DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_PATH="$DIR/Summarizer.app"
+echo
+echo -e "${BLUE}── Summarizer.app 빌드 (더블클릭 실행 가능) ──${NC}"
+
+# 기존 .app 있으면 제거 후 새로 빌드
+rm -rf "$APP_PATH"
+
+# AppleScript (임시 파일 경유 — osacompile은 /dev/stdin 못 읽음):
+#   1) 8765 포트가 점유 중이면 → 이미 떠있는 인스턴스. 브라우저만 새로 열기
+#   2) 포트 비어있으면 → 백그라운드로 app_web.py 실행 + 브라우저 열기
+TMP_SCPT="$(mktemp -t summarizer.XXXXXX).applescript"
+cat > "$TMP_SCPT" <<APPLESCRIPT
+on run
+    set workDir to "$DIR"
+    set logPath to "/tmp/summarizer.log"
+    set isRunning to false
+    try
+        do shell script "lsof -nP -iTCP:8765 -sTCP:LISTEN > /dev/null 2>&1"
+        set isRunning to true
+    end try
+    if not isRunning then
+        do shell script "cd " & quoted form of workDir & " && /usr/bin/python3 app_web.py > " & logPath & " 2>&1 &"
+        delay 1.5
+    end if
+    do shell script "open http://localhost:8765/"
+end run
+APPLESCRIPT
+osacompile -o "$APP_PATH" "$TMP_SCPT"
+rm -f "$TMP_SCPT"
+
+if [ -d "$APP_PATH" ]; then
+    echo -e "${GREEN}[✓] Summarizer.app 빌드 완료 — $APP_PATH${NC}"
+    echo "    Finder에서 더블클릭하면 GUI 자동 실행"
+else
+    echo -e "${YELLOW}[!] .app 빌드 실패 (osacompile). 터미널로 'python3 app_web.py' 직접 실행 가능${NC}"
+fi
+
+# ── 9. 완료 ──
 echo
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  ✓ 셋업 완료                                              ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo
-echo "다음 명령으로 GUI 실행 (브라우저 자동 열림):"
-echo "  ${GREEN}python3 $DIR/app_web.py${NC}"
+echo -e "${GREEN}실행 방법 (택 1):${NC}"
+echo "  A. ${GREEN}Finder에서 Summarizer.app 더블클릭${NC} (가장 편함)"
+echo "  B. ${GREEN}python3 $DIR/app_web.py${NC} (터미널)"
 echo
-echo "첫 실행 시 macOS 권한 팝업 (\"Terminal이 Chrome 제어 허용?\") → ${GREEN}허용${NC} 클릭"
+echo "Tip: Summarizer.app을 ${BLUE}/Applications${NC}으로 옮기거나 Dock에 드래그하면 더 편리."
+echo
+echo "첫 실행 시 macOS 권한 팝업 (\"Summarizer가 Chrome 제어 허용?\") → ${GREEN}허용${NC} 클릭"
 echo "이후엔 모든 게 자동 — URL 붙여넣기만 하면 한국어 요약."
 echo
 echo "문서: README.md / 트러블슈팅 / 라이선스 모두 포함"
