@@ -388,11 +388,36 @@ HTML = r"""<!DOCTYPE html>
     button {
       padding: 11px 22px; font-size: 14px; cursor: pointer; border: 0;
       border-radius: 6px; background: var(--primary); color: white; font-weight: 600;
+      /* 모든 버튼 공통 — 클릭 피드백 transition */
+      transition: transform 0.08s ease, filter 0.12s ease, box-shadow 0.12s ease, background 0.15s ease;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
     button:hover:not(:disabled) { background: var(--primary-hover); }
     button:disabled { background: var(--pending); cursor: not-allowed; }
     button.secondary { background: var(--secondary-bg); color: var(--secondary-text); }
     button.secondary:hover { background: var(--secondary-bg-hover); }
+
+    /* 클릭 즉시 피드백 — 모든 버튼 공통 */
+    button:active:not(:disabled) {
+      transform: scale(0.96);
+      filter: brightness(0.88);
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
+    }
+    /* JS가 클릭 직후 200ms 동안 붙여주는 강조 클래스 */
+    button.btn-flash {
+      animation: btn-flash-anim 0.32s ease-out;
+    }
+    @keyframes btn-flash-anim {
+      0%   { box-shadow: 0 0 0 0 var(--primary); }
+      40%  { box-shadow: 0 0 0 6px rgba(74,144,226,0.18); }
+      100% { box-shadow: 0 0 0 0 rgba(74,144,226,0); }
+    }
+    /* 키보드 포커스 — 접근성 */
+    button:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
     .help { font-size: 12px; color: var(--text-dim); margin-left: auto; }
     .stats { margin: 15px 0; font-size: 13px; color: var(--text-muted); }
     .stats span { margin-right: 12px; }
@@ -1500,6 +1525,18 @@ https://www.cnbc.com/2026/04/26/..."></textarea>
         renderJobs(data.jobs);
       } catch (e) { /* skip */ }
     }
+
+    // ── 전역 버튼 클릭 피드백 (flash 효과) ──
+    // 모든 button을 위임 처리 — 동적으로 추가되는 jobs 카드의 버튼도 자동 적용
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn || btn.disabled) return;
+      btn.classList.remove('btn-flash');
+      // reflow 강제 → 같은 버튼 연속 클릭 시에도 애니메이션 다시 발동
+      void btn.offsetWidth;
+      btn.classList.add('btn-flash');
+      setTimeout(() => btn.classList.remove('btn-flash'), 350);
+    }, true);
 
     loadProviderInfo();
     refresh();
