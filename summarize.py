@@ -216,12 +216,16 @@ def _dispatch(prompt: str, cfg: dict) -> str:
     raise ValueError(f"unknown provider: {provider}")
 
 
-def _model_footer(cfg: dict) -> str:
-    """응답 끝에 붙일 모델 정보 한 줄. 텔레그램에서 어떤 모델로 요약됐는지 가시화."""
+def get_summary_model_label() -> str:
+    """텔레그램 봇이 사전 알림 메시지에 표시할 모델 라벨.
+    예: "gemini-2.5-pro (Gemini CLI)" — 봇이 cfg 안 읽고 이 함수 import해서 사용 가능."""
+    cfg = _load_config()
     provider = cfg.get("provider", "?")
     model = cfg.get("model") or PROVIDER_DEFAULTS.get(provider, {}).get("default_model", "default")
-    label = PROVIDER_DEFAULTS.get(provider, {}).get("label", provider)
-    return f"\n\n_🤖 요약: {model} ({label})_"
+    label_full = PROVIDER_DEFAULTS.get(provider, {}).get("label", provider)
+    # "Claude Code (OAuth)" → "Claude Code"로 단순화
+    label_short = label_full.split(" (")[0]
+    return f"{model} ({label_short})"
 
 
 def fetch_and_summarize(url: str) -> str:
@@ -240,7 +244,8 @@ def fetch_and_summarize(url: str) -> str:
     out = _dispatch(prompt, cfg).strip()
     if not out:
         raise RuntimeError(f"{cfg.get('provider')} 응답이 비어있음")
-    return out + _model_footer(cfg)
+    # footer 제거 — 모델 정보는 봇이 사전 알림 메시지에 표시 (사용자 요청)
+    return out
 
 
 if __name__ == "__main__":
