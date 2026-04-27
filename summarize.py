@@ -3,7 +3,7 @@ summarize.py
 ============
 URL → 본문 추출(fetch_article.py) → claude -p 한국어 요약 → stdout
 
-요약 모델: claude haiku (빠름, 뉴스 요약엔 충분)
+요약 모델: claude sonnet (분석 깊이 — 시장/지정학적 함의 해석에 적합)
 요약 포맷: prompt_template.md 또는 내장 default
 
 사전 조건:
@@ -112,12 +112,12 @@ def fetch_and_summarize(url: str) -> str:
     if len(body) > MAX_BODY:
         body = body[:MAX_BODY] + "\n[...중략...]"
 
-    # 2) claude -p 요약 (haiku 모델)
+    # 2) claude -p 요약 (sonnet 모델 — 분석 깊이)
     prompt = _load_prompt_template().format(url=final_url, title=title, body=body)
     claude_proc = subprocess.run(
         [
             CLAUDE_BIN, "-p",
-            "--model", "haiku",
+            "--model", "sonnet",
             "--output-format", "text",
             "--append-system-prompt",
             "당신은 외국 뉴스 본문을 한국어로 요약하는 도구입니다. 사용자가 제시한 형식만 정확히 따르세요. 메모리/스킬/도구 호출 없이 즉시 답하세요.",
